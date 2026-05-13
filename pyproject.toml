@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opencode-worker"
+version = "0.1.0"
+description = "Safe OpenCode Worker — sandboxed opencode task runner"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.135",
+    "uvicorn[standard]>=0.41",
+    "pydantic>=2.12",
+    "pydantic-settings>=2.13",
+    "httpx>=0.28",
+    "httpx-sse>=0.4",
+    "docker>=7.1",
+    "aiosqlite>=0.22",
+    "sse-starlette>=2.4",
+    "anyio>=4.13",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.25",
+]
+
+[project.scripts]
+opencode-worker = "worker.main:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

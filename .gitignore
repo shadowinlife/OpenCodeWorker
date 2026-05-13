@@ -32,6 +32,9 @@ ENV/
 .ipynb_checkpoints/
 *.ipynb
 
+# Worker runtime data（SQLite DB、artifacts、workspace 快照）
+data/
+
 # Data files (avoid committing raw market data)
 data/raw/
 data/cache/
