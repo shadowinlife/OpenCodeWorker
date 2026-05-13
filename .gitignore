@@ -1,0 +1,86 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Conda
+.conda/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data files (avoid committing raw market data)
+data/raw/
+data/cache/
+*.csv
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+
+# Logs and outputs
+logs/
+*.log
+output/
+results/
+
+# Credentials and secrets
+.env.local
+.env.*.local
+secrets/
+*.key
+*.pem
+config/local_*.yaml
+config/local_*.yml
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# opencode / oh-my-opencode session artifacts
+.opencode/
+.oh-my-opencode/
+
+# MCP local state
+.mcp/
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
