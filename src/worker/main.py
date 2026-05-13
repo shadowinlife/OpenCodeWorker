@@ -35,7 +35,7 @@ from fastapi import FastAPI
 from worker.api.middleware import BearerTokenMiddleware
 from worker.api.routes import router
 from worker.config import get_settings
-from worker.orchestrator.queue import start_queue_worker
+from worker.orchestrator.queue import set_executor, start_queue_worker
 from worker.storage.db import close_db, init_db
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,35 @@ async def lifespan(app: FastAPI):
     await init_db(settings.db_path)
     logger.info("SQLite initialized: %s", settings.db_path)
 
+    # Phase 2: Reaper — 清理上次 Worker 崩溃遗留的孤儿容器
+    try:
+        from worker.sandbox.manager import reap_orphaned_containers
+        reaped = await reap_orphaned_containers()
+        if reaped:
+            from worker.storage.db import get_db
+            from worker.storage.repo import update_task_status, insert_event
+            from worker.contract.task import TaskStatus
+            from worker.contract.event import TaskEventKind
+            db = await get_db()
+            for orphan_task_id in reaped:
+                try:
+                    await update_task_status(db, orphan_task_id, TaskStatus.failed)
+                    await insert_event(db, orphan_task_id, TaskEventKind.task_failed,
+                                       {"error": "orphaned_after_worker_restart"})
+                except Exception:
+                    pass  # 任务可能已是终态，忽略
+    except Exception as exc:
+        # Docker 不可用时（开发环境无 Docker）不阻塞启动
+        logger.warning("reaper skipped (Docker unavailable?): %s", exc)
+
+    # Phase 2: 注册真实 Orchestrator 到任务队列
+    try:
+        from worker.orchestrator.orchestrator import run_task
+        set_executor(run_task)
+        logger.info("orchestrator executor registered")
+    except Exception as exc:
+        logger.warning("orchestrator registration skipped: %s", exc)
+
     # 启动后台任务队列消费协程
     queue_task = await start_queue_worker()
     logger.info("queue worker started")
@@ -79,6 +108,13 @@ async def lifespan(app: FastAPI):
     queue_task.cancel()
     try:
         await queue_task
+    except Exception:
+        pass
+
+    # Phase 2: 关闭 Docker 客户端
+    try:
+        from worker.sandbox.manager import close_docker_client
+        close_docker_client()
     except Exception:
         pass
 

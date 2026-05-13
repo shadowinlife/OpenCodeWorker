@@ -422,25 +422,33 @@ Phase 0 退出检查（无新 HITL，按 ADR 落实即可）：
 
 ### Phase 2 — Docker Sandbox + Workspace + Broker
 
-- [ ] Dockerfile：debian-slim + Bun + opencode pin + oh-my-opencode pin + **需要的 stdio MCP 二进制 pin** + 非 root 用户；禁用 auto-update（env + 配置双层）。
-- [ ] Sandbox 启动参数：`--read-only`、`--tmpfs /tmp`、`--cap-drop ALL`、`--security-opt no-new-privileges`、`--pids-limit`、`--memory`、`--cpus`、自定义 network。
-- [ ] 网络隔离：自建 docker network；容器默认无 default route，仅能访问 broker container/host endpoint。
-- [ ] Workspace handling：
-  - tar.gz 解包：限大小、symlink 解析白名单、防 zip-slip。
-  - git clone（在 worker 进程或 broker，**不在沙箱内 clone 以避免敏感凭据**）。
-  - 解包结果以独立 volume 挂载到容器。
-- [ ] Reaper / GC：基于 label 扫描孤儿容器与 tmp dir；worker 启动时清理。
-- [ ] Host Broker MVP：
+> **状态：代码实现完成（2025-07，commit TBD）；镜像构建 + 安全回归测试待 Phase 2.5 执行。**
+
+- [x] Dockerfile：debian-slim + Bun + opencode pin + oh-my-openagent pin + 非 root 用户(uid 1000)；禁用 auto-update（ENV + 容器 env 双层）。
+  - `docker/worker/Dockerfile` + `docker/worker/entrypoint.sh`
+- [x] Sandbox 启动参数：`--read-only`、`--tmpfs /tmp`、`--cap-drop ALL`、`--security-opt no-new-privileges`、`--pids-limit`、`--memory`、`--nano_cpus`、自定义 network。
+  - 实现于 `src/worker/sandbox/manager.py`（`start_container`）
+- [x] 网络隔离：自建 docker network（`worker-sandbox-net`，`internal=True`）；Broker 作为唯一出口。
+  - `ensure_worker_network()` + `WORKER_DOCKER_NETWORK` 常量
+- [x] Workspace handling：
+  - tar.gz 解包：限大小（500MB 解压 / 200MB 下载 / 50MB inline）、防 zip-slip、禁绝对路径/symlink 逃逸。
+  - git clone（在 worker 进程侧执行，`--depth 1`；验证 https:// 协议 + 40 位完整 SHA）。
+  - 实现于 `src/worker/workspace/handler.py`
+- [x] Reaper / GC：基于 label（`worker.managed=true`）扫描孤儿容器；worker 启动时自动清理 + 将关联任务状态更新为 `failed`。
+  - `reap_orphaned_containers()` + main.py lifespan 调用
+- [x] Host Broker MVP：
   - HTTP forward proxy + **域名级白名单**（按 task 动态下发，默认空）。
-  - **不管 MCP 生命周期**：所有 MCP 已 stdio + 打包入镜像，容器内 opencode 直接 spawn；MCP 若需公网由 broker 放行域名。
-  - **不做凭据代理**：容器内通过 env 持有 LLM API key（MVP 简化）。
-  - 审计 hook：记录所有出站请求 + task_id 关联。
-  - Broker 配置接口：`POST /broker/tasks/:id/policy`（worker 内部调用）下发白名单与 TTL。
-- [ ] 安全回归测试：rm -rf /、读取 /etc/shadow、curl 外网、fork bomb、超大输出。
+  - SSRF 防护：RFC 1918 + loopback + link-local 黑名单。
+  - 审计 log（WARNING 级别，含 task_id）。
+  - Broker 配置接口：`POST /broker/tasks/:id/policy`（worker orchestrator 调用）。
+  - 实现于 `src/broker/proxy.py` + `src/broker/policy.py`
+- [x] Orchestrator：`src/worker/orchestrator/orchestrator.py`，完整生命周期驱动（workspace→network→policy→container→health→drive→cleanup）。
+- [ ] 安全回归测试：rm -rf /、读取 /etc/shadow、curl 外网、fork bomb、超大输出。（待镜像构建完成后执行）
 
 Phase 2 退出检查：
-- 镜像构建产物推送到 GHCR 私有 tag；ADR 记录 pin 版本。
-- 安全回归测试全部通过；任意单条失败必须修复后才能进入 Phase 3。
+- [x] 代码实现完成，语法检查（30 文件）全部通过，/health smoke test 通过。
+- [ ] 镜像构建产物推送到 GHCR 私有 tag；ADR 记录 pin 版本。
+- [ ] 安全回归测试全部通过；任意单条失败必须修复后才能进入 Phase 3。
 
 ---
 

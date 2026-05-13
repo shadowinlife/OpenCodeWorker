@@ -78,6 +78,23 @@ class Settings(BaseSettings):
     # 建议 ≤ 30 秒；Nginx 默认 proxy_read_timeout 为 60 秒
     sse_heartbeat_sec: float = 15.0
 
+    # ------------------------------------------------------------------ #
+    # Docker 沙箱（Phase 2）                                                #
+    # ------------------------------------------------------------------ #
+    # Worker 沙箱容器使用的 Docker 镜像（需预先构建并推送）
+    # 本地开发可设为 "worker-sandbox:dev"
+    sandbox_image: str = "worker-sandbox:latest"
+
+    # 沙箱容器使用的 Docker network 名称（internal=True，无外网访问）
+    sandbox_network: str = "worker-sandbox-net"
+
+    # ------------------------------------------------------------------ #
+    # Host Broker（Phase 2）                                                #
+    # ------------------------------------------------------------------ #
+    # Broker 服务监听地址（Worker 进程本机）
+    broker_host: str = "127.0.0.1"
+    broker_port: int = 8090
+
     @property
     def artifacts_dir(self) -> Path:
         """产物文件存储目录（data_dir/artifacts/），由 Orchestrator 按 task_id 建子目录。"""
