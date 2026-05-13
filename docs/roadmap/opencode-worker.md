@@ -1,8 +1,9 @@
 # Safe OpenCode Worker — Roadmap
 
 > 本文档是 `VibeTradingOpenCodeWorker` 仓库的实施路线图。
-> 当前阶段：**MVP 规划完成，Phase 0 本机自检已完成首轮**。所有原 HITL 议题已在规划阶段决策完毕，见 §1.1 与 §7。
+> 当前阶段：**Phase 1 已完成（Worker Contract & API 骨架，本机 smoke test 通过）**。
 > 2026-05-13 已补充 opencode / oh-my-opencode 本机自检证据，见 §1.3。
+> 2026-05-13 Phase 1 骨架实现完成并本机验证，见 §1.4。
 > 后续若执行中出现新的人工决策点，按 `🟠 HITL` 标注追加。
 
 ---
@@ -162,6 +163,50 @@
 - **`OPENCODE_CONFIG_DIR`**：文档确认为「自定义配置目录（相当于 `.opencode/`，搜索 agents/commands/modes/plugins）」，与全局 config 文件路径不同（全局文件路径由 `OPENCODE_CONFIG` 控制）。本轮未单独测试文件访问；鉴于 `OPENCODE_CONFIG_CONTENT` 可满足 config 注入需求，容器方案不依赖此变量。
 - **oh-my-openagent 版本确认**：opencode 插件包 `oh-my-openagent@latest` 本机缓存版本为 **3.17.2**（npm latest：4.1.1）。server toast 事件显示 `OhMyOpenCode 3.17.2`，与缓存版本一致。见 ADR-006。
 - **真实 `per_*` permission 事件 payload**：本轮未触发（需要真实 LLM 调用且设置 bash:ask）。已知 response endpoint 的完整 schema，事件 payload 的字段细节（permissionID 出现的 SSE event type）推迟到 Phase 3 adapter 实现时通过集成测试确认。
+
+---
+
+### 1.4 2026-05-13 Phase 1 本机验证证据
+
+本节记录 Phase 1 骨架实现完成后的本机 smoke test 结果。
+运行环境：macOS + conda env `legonanobot` + Python 3.11 + FastAPI 0.135 + uvicorn 0.41。
+
+**实现清单（全部完成）：**
+
+| 文件 | 描述 |
+|------|------|
+| `src/worker/contract/task.py` | TaskRequest / TaskResponse / TaskStatus（14 状态）/ TERMINAL_STATUSES |
+| `src/worker/contract/event.py` | TaskEvent / TaskEventKind（18 种）/ TERMINAL_EVENT_KINDS |
+| `src/worker/contract/decision.py` | DecisionRequest / DecisionResponse / PendingDecision（HITL 5 步流程）|
+| `src/worker/contract/artifact.py` | Artifact / ArtifactType（9 种产物类型）|
+| `src/worker/contract/error.py` | WorkerError / ErrorKind（14 种，含 retryable/requires_hitl 分类）|
+| `src/worker/config.py` | Settings（pydantic-settings，WORKER_* 前缀，bearer_token 必须设置）|
+| `src/worker/storage/db.py` | SQLite init（4 张表），WAL 模式预留，进程单例连接 |
+| `src/worker/storage/repo.py` | 全参数化 SQL CRUD（tasks/events/decisions/artifacts），无 SQL 注入风险 |
+| `src/worker/orchestrator/queue.py` | asyncio.Queue + Semaphore + Phase 1 stub executor |
+| `src/worker/api/middleware.py` | BearerTokenMiddleware（hmac.compare_digest 防时序攻击）|
+| `src/worker/api/routes.py` | 全部 10 个端点（含 SSE Last-Event-ID 回放 + heartbeat）|
+| `src/worker/main.py` | FastAPI app + lifespan（init_db / start_queue_worker / close_db）|
+
+**Smoke test 结果（2026-05-13 本机实测，端口 18080~18082）：**
+
+- `GET /health` → `{"status":"ok","version":"0.1.0"}` ✅
+- `GET /ready` → `{"status":"ready","version":"0.1.0"}` ✅
+- 无 token 请求 → `401 unauthorized` ✅
+- `GET /tasks/nonexistent` with token → `404` ✅
+- `POST /tasks` → `201`，任务状态通过 Phase 1 stub 经 `pending→queued→starting_container→completed` 流转（约 5ms）✅
+- `GET /tasks/:id` → `{"status":"completed",...}` ✅
+- 重复 `task_id` → `409 Conflict` ✅（幂等保护有效）
+- SSE `GET /tasks/:id/events` → 回放 4 条历史事件（task_created / task_queued / task_started / task_completed），格式 `id: N\nevent: kind\ndata: {}\n\n` ✅
+- `POST /tasks/:id/abort`（已终态）→ `409` ✅
+- `GET /tasks/:id/artifacts` → `[]` ✅
+
+**已知 Phase 1 限制（Phase 2 解决）：**
+
+- Phase 1 stub executor 直接将任务标为 completed，无真实 Docker 容器操作。
+- `abort` 端点只修改 DB 状态，不向容器发送 stop 信号（Phase 2 实现）。
+- HITL decisions、artifacts 下载端点逻辑完整，但需要 Orchestrator 写入真实 artifacts 才能测试下载。
+- heartbeat 轮询间隔为 0.5s（适合开发），生产建议调整 `sse_heartbeat_sec` 配置。
 
 ---
 
@@ -349,7 +394,7 @@ Phase 0 退出检查（无新 HITL，按 ADR 落实即可）：
 
 ### Phase 1 — Worker Contract 与 API 骨架
 
-- [ ] 仓库结构初始化：
+- [x] 仓库结构初始化：
   ```
   src/worker/            # FastAPI app
     api/                 # routes
@@ -365,13 +410,13 @@ Phase 0 退出检查（无新 HITL，按 ADR 落实即可）：
   tests/
   docs/
   ```
-- [ ] Pydantic schema 锁定 TaskRequest / TaskEvent / Decision / Artifact / Error。
-- [ ] FastAPI 路由 shell + Bearer token middleware + 请求 trace_id 注入。
-- [ ] SSE endpoint：支持 `Last-Event-ID` 重连、cursor 回放、heartbeat。
-- [ ] 内置任务队列（asyncio + 持久化到 SQLite）；`max_concurrent_tasks` 配置；超出排队返回 `queued` 事件。
-- [ ] Storage Lite：tasks / events / decisions / artifacts 表；事件 append-only + cursor 索引。
-- [ ] Idempotency：基于 `task_id` 和 `decision.idempotency_key`。
-- [ ] OpenAPI schema 自动导出供上游使用。
+- [x] Pydantic schema 锁定 TaskRequest / TaskEvent / Decision / Artifact / Error。
+- [x] FastAPI 路由 shell + Bearer token middleware + 请求 trace_id 注入。
+- [x] SSE endpoint：支持 `Last-Event-ID` 重连、cursor 回放、heartbeat。
+- [x] 内置任务队列（asyncio + 持久化到 SQLite）；`max_concurrent_tasks` 配置；超出排队返回 `queued` 事件。
+- [x] Storage Lite：tasks / events / decisions / artifacts 表；事件 append-only + cursor 索引。
+- [x] Idempotency：基于 `task_id` 和 `decision.idempotency_key`。
+- [x] OpenAPI schema 自动导出供上游使用（FastAPI 自动生成，访问 `/docs`）。
 
 ---
 
