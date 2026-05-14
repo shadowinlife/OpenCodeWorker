@@ -53,9 +53,10 @@ from worker.storage.repo import (
 
 logger = logging.getLogger(__name__)
 
-# oh-my-openagent agent 名称（§4 Spike 实测）
-AGENT_PROMETHEUS = "Prometheus"
-AGENT_SISYPHUS = "Sisyphus"
+# opencode 内置 agent 名称（oh-my-openagent 未加载时使用内置 agent）
+# "build" agent 拥有 bash/write/edit/webfetch 全量权限
+AGENT_PROMETHEUS = "plan"
+AGENT_SISYPHUS = "build"
 
 # HITL 决策轮询间隔（秒）
 _HITL_POLL_INTERVAL = 2.0
@@ -178,10 +179,16 @@ class OpenCodeDriver:
             )
             agent = AGENT_SISYPHUS
 
-        # Step 4: 启动 SSE 消费（后台 asyncio Task）
+        # Step 4: 启动 SSE 消费（后台 asyncio Task）+ REST 轮询（并行）
+        # opencode 1.14.30 的 /global/event 只传心跳；session idle 必须通过
+        # REST 轮询 GET /session/{id}/message 检测（info.time.completed 有值）
         sse_task = asyncio.create_task(
             self._consume_sse(session_id),
             name=f"sse-{self.task_id[:8]}",
+        )
+        poll_task = asyncio.create_task(
+            self._poll_session_idle(session_id),
+            name=f"poll-{self.task_id[:8]}",
         )
 
         try:
@@ -198,15 +205,32 @@ class OpenCodeDriver:
                 self.task_id, agent, mode.value,
             )
 
-            # Step 6: 等待 SSE 消费循环结束（session idle 或 abort）
-            await sse_task
+            # Step 6: SSE（错误/权限检测）与 REST 轮询并行，任一完成即退出
+            done, pending = await asyncio.wait(
+                [sse_task, poll_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            # 取消未完成的任务
+            for t in pending:
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+            # 检查是否有异常（session.error 由 _consume_sse 抛出）
+            for t in done:
+                exc = t.exception()
+                if exc is not None:
+                    raise exc
 
         except Exception:
-            sse_task.cancel()
-            try:
-                await sse_task
-            except (asyncio.CancelledError, Exception):
-                pass
+            for t in [sse_task, poll_task]:
+                if not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
             raise
 
         # Step 7: plan_first 模式下等待人工审批计划
@@ -220,6 +244,51 @@ class OpenCodeDriver:
         # abort_event 由权限超时或 plan 拒绝设置，抛出让 orchestrator 写 aborted
         if self._abort_event.is_set():
             raise RuntimeError("task aborted (HITL decision or permission timeout)")
+
+    # ── REST 轮询检测 session idle ────────────────────────────────────────────
+
+    async def _poll_session_idle(self, session_id: str) -> None:
+        """轮询 GET /session/{id}/message，直到最后一条 assistant 消息完成。
+
+        opencode 1.14.30 的 /global/event SSE 只发送心跳；真正的任务完成信号
+        需要通过检查 message.info.time.completed 字段来检测。
+        当检测到完成时，此协程正常返回（_run_inner 会取消 _consume_sse）。
+        """
+        poll_interval = 5.0  # 每 5 秒轮询一次
+        logger.info("task %s: starting REST poll for session idle (interval=%.0fs)",
+                    self.task_id, poll_interval)
+        while not self._abort_event.is_set():
+            await asyncio.sleep(poll_interval)
+            if self._abort_event.is_set():
+                break
+            try:
+                messages = await self.client.get_messages(session_id)
+                if self._is_session_messages_idle(messages):
+                    logger.info("task %s: session idle detected via REST poll "
+                                "(messages=%d)", self.task_id, len(messages))
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("task %s: REST poll error: %s", self.task_id, exc)
+
+    @staticmethod
+    def _is_session_messages_idle(messages: list) -> bool:
+        """判断 session 消息列表是否表示任务已完成。
+
+        opencode 在 assistant 消息完成时会在 info.time.completed 写入时间戳。
+        检测最后一条 assistant 消息是否已有 completed 时间戳。
+        """
+        if not messages:
+            return False
+        for msg in reversed(messages):
+            info = msg.get("info", {})
+            if not isinstance(info, dict):
+                continue
+            if info.get("role") == "assistant":
+                time_info = info.get("time", {})
+                return bool(isinstance(time_info, dict) and time_info.get("completed"))
+        return False
 
     # ── SSE 消费循环 ──────────────────────────────────────────────────────────
 
@@ -247,6 +316,19 @@ class OpenCodeDriver:
                 if is_session_idle(raw_event):
                     logger.info("task %s: session idle → SSE done", self.task_id)
                     break
+
+                # 检查 session.error（prompt_async 失败时快速退出）
+                if raw_event.get("type") == "session.error":
+                    err_msg = (
+                        raw_event.get("payload", {}).get("error")
+                        or raw_event.get("payload", {}).get("message")
+                        or str(raw_event.get("payload", ""))
+                    )
+                    logger.error(
+                        "task %s: session.error from opencode: %s",
+                        self.task_id, err_msg,
+                    )
+                    raise RuntimeError(f"opencode session.error: {err_msg}")
 
                 # 捕获 diff 快照（最新版本）
                 diff = extract_diff(raw_event)

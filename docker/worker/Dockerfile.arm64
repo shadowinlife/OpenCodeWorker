@@ -1,0 +1,87 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# worker-sandbox:dev (linux/arm64 原生镜像)
+#
+# 使用 debian:bookworm-slim 作为基础（本地已有 ARM64 版本）
+# 替代 ubuntu:24.04 基础镜像（后者仅有 AMD64 版本，需通过 QEMU 模拟）
+#
+# 包含：
+#   - opencode linux-arm64 自包含二进制（v1.14.30）
+#   - oh-my-openagent 插件预缓存（架构无关的 JS bundle）
+#   - Python 3 + 量化分析包（duckdb, pandas, numpy, requests, httpx）
+#
+# 构建命令（在项目根目录执行）：
+#   DOCKER_HOST=unix://$HOME/.colima/default/docker.sock \
+#   docker build -t worker-sandbox:dev-arm64 \
+#     --platform linux/arm64 \
+#     -f docker/worker/Dockerfile.arm64 .
+# ──────────────────────────────────────────────────────────────────────────────
+
+FROM debian:bookworm-slim
+
+# ── 系统依赖（使用阿里云镜像加速）────────────────────────────────────────────
+RUN sed -i 's|http://deb.debian.org|http://mirrors.aliyun.com|g; s|http://security.debian.org|http://mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's|http://deb.debian.org|http://mirrors.aliyun.com|g; s|http://security.debian.org|http://mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        python3 \
+        python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── 安装量化分析 Python 包（使用阿里云 PyPI 镜像）────────────────────────────
+RUN pip3 install --no-cache-dir --break-system-packages \
+        -i https://mirrors.aliyun.com/pypi/simple/ \
+        "duckdb>=1.0" \
+        "pandas>=2.0" \
+        "numpy>=1.26" \
+        "requests>=2.31" \
+        "httpx>=0.27"
+
+# ── 创建 sandbox 用户（uid/gid=1000）────────────────────────────────────────
+RUN groupadd -g 1000 sandbox && \
+    useradd -u 1000 -g 1000 -m -d /home/sandbox -s /bin/bash sandbox
+
+# ── 安装 opencode ARM64 自包含二进制 ─────────────────────────────────────────
+# opencode-linux-arm64.tar.gz 解包后为单个 opencode 可执行文件
+COPY docker/worker/dist/opencode-linux-arm64.tar.gz /tmp/opencode.tar.gz
+RUN tar xzf /tmp/opencode.tar.gz -C /tmp && \
+    install -m 0755 /tmp/opencode /usr/local/bin/opencode && \
+    rm -f /tmp/opencode.tar.gz /tmp/opencode
+
+# ── 预置 oh-my-openagent 插件 cache（架构无关 JS bundle）────────────────────
+COPY docker/worker/dist/oh-my-openagent-cache.tar.gz /tmp/ohmy-cache.tar.gz
+RUN mkdir -p /home/sandbox/.cache/opencode/packages && \
+    tar xzf /tmp/ohmy-cache.tar.gz -C /home/sandbox/.cache/opencode/packages && \
+    chown -R sandbox:sandbox /home/sandbox/.cache && \
+    mkdir -p /root/.cache/opencode/packages && \
+    cp -r /home/sandbox/.cache/opencode/packages/. /root/.cache/opencode/packages/ && \
+    rm -f /tmp/ohmy-cache.tar.gz
+
+# ── 预置 @ai-sdk/openai-compatible 包 cache（架构无关 JS bundle）────────────
+COPY docker/worker/dist/ai-sdk-openai-compatible-cache.tar.gz /tmp/aisdk-cache.tar.gz
+RUN cd /home/sandbox/.cache/opencode/packages && \
+    tar xzf /tmp/aisdk-cache.tar.gz --strip-components=1 && \
+    cd /root/.cache/opencode/packages && \
+    tar xzf /tmp/aisdk-cache.tar.gz --strip-components=1 && \
+    rm /tmp/aisdk-cache.tar.gz && \
+    chown -R sandbox:sandbox /home/sandbox/.cache
+
+# ── 目录准备 ──────────────────────────────────────────────────────────────────
+RUN mkdir -p /home/sandbox/.config/opencode /workspace \
+             /root/.duckdb /home/sandbox/.duckdb && \
+    chown -R sandbox:sandbox /home/sandbox/.config && \
+    chown sandbox:sandbox /workspace
+
+# ── 容器入口脚本 ───────────────────────────────────────────────────────────────
+COPY docker/worker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# ── 环境变量 ───────────────────────────────────────────────────────────────────
+ENV OPENCODE_DISABLE_AUTOUPDATE=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+USER sandbox
+WORKDIR /workspace
+EXPOSE 4096
+
+ENTRYPOINT ["/entrypoint.sh"]

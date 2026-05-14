@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # Host Broker（Phase 2）                                                #
     # ------------------------------------------------------------------ #
+    # 是否启用 Broker 出口代理（True = 注入 HTTP_PROXY 并管控容器出站流量）
+    # 设为 False 时容器直接访问外网，适用于无 Broker 基础设施的开发/E2E 环境
+    # 环境变量：WORKER_BROKER_ENABLED=false
+    broker_enabled: bool = True
     # Broker 服务监听地址（Worker 进程本机）
     broker_host: str = "127.0.0.1"
     broker_port: int = 8090

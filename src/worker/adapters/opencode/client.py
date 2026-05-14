@@ -128,7 +128,15 @@ class OpenCodeClient:
         if agent:
             body["agent"] = agent
         if model:
-            body["model"] = model
+            # opencode API 要求 model 为 {"providerID": "...", "modelID": "..."}
+            # 支持 "provider/modelID" 字符串格式自动转换
+            if isinstance(model, str) and "/" in model:
+                provider_id, model_id = model.split("/", 1)
+                body["model"] = {"providerID": provider_id, "modelID": model_id}
+            elif isinstance(model, str):
+                body["model"] = {"modelID": model}
+            else:
+                body["model"] = model
         resp = await self._client.post(
             f"/session/{session_id}/prompt_async",
             json=body,
@@ -228,7 +236,19 @@ class OpenCodeClient:
                 if not raw or raw == "[DONE]":
                     continue
                 try:
-                    event = json.loads(raw)
+                    outer = json.loads(raw)
+                    # opencode 1.14.30 实际 SSE 格式:
+                    #   {"payload": {"type": "<event_type>", "properties": <data>}}
+                    # 归一化为 event_stream.py 期望的格式:
+                    #   {"type": "<event_type>", "payload": <data>}
+                    if "type" not in outer and isinstance(outer.get("payload"), dict):
+                        inner = outer["payload"]
+                        event = {
+                            "type": inner.get("type", ""),
+                            "payload": inner.get("properties", {}),
+                        }
+                    else:
+                        event = outer
                     yield event
                 except json.JSONDecodeError as exc:
                     logger.debug("SSE JSON decode error: %s | raw=%r", exc, raw)

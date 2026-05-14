@@ -62,18 +62,20 @@ async def prepare_workspace(
     git_url: Optional[str] = None,
     git_sha: Optional[str] = None,
     git_subpath: Optional[str] = None,
+    local_path: Optional[str] = None,
 ) -> Path:
     """准备任务工作区目录，返回挂载到容器的本地 Path。
 
     Args:
         task_id:    任务 UUID，用于目录命名（避免冲突）。
         base_dir:   工作区根目录（Settings.data_dir / "workspaces"）。
-        kind:       "empty" | "tarball" | "git"
+        kind:       "empty" | "tarball" | "git" | "local"
         tarball_url:   kind=tarball 时的远程 URL。
         tarball_inline_b64: kind=tarball 时的内联 base64 数据。
         git_url:    kind=git 时的仓库 URL（仅 https://）。
         git_sha:    kind=git 时的目标提交 SHA（完整 40 位）。
         git_subpath: kind=git 时仅使用的子目录（可选）。
+        local_path: kind=local 时的宿主机绝对路径（直接 bind mount）。
 
     Returns:
         工作区绝对路径（容器将绑定挂载此目录到 /workspace）。
@@ -117,11 +119,20 @@ async def prepare_workspace(
             # 不移动，直接返回 subpath 目录（容器挂载点会映射到此）
             return subpath_dir.resolve()
 
+    elif kind == "local":
+        # 直接使用宿主机目录（开发/测试模式，不做安全隔离，不清理）
+        if not local_path:
+            raise ValueError("local kind requires local_path")
+        host_dir = Path(local_path)
+        if not host_dir.is_dir():
+            raise ValueError(f"local_path is not a directory: {local_path!r}")
+        logger.info("task %s: using local workspace at %s (no isolation)", task_id, host_dir)
+        return host_dir
+
     else:
         raise ValueError(f"unknown workspace kind: {kind!r}")
 
     return workspace_dir.resolve()
-
 
 async def cleanup_workspace(workspace_dir: Path) -> None:
     """删除工作区目录（任务终态后调用）。

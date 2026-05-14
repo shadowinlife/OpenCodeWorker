@@ -107,6 +107,7 @@ async def run_task(task_id: str) -> None:
             git_url=request.workspace.git.url if request.workspace.git else None,
             git_sha=request.workspace.git.sha if request.workspace.git else None,
             git_subpath=request.workspace.git.subpath if request.workspace.git else None,
+            local_path=request.workspace.local_path,
         )
         logger.info("task %s: workspace ready at %s", task_id, workspace_dir)
 
@@ -114,9 +115,12 @@ async def run_task(task_id: str) -> None:
         await ensure_worker_network(WORKER_DOCKER_NETWORK)
 
         # ── Step 3: 构建 broker policy ────────────────────────────────────────
-        from broker.policy import set_task_policy
-        allow_hosts = request.broker_policy.allow_egress_hosts if request.broker_policy else []
-        set_task_policy(task_id, allow_hosts)
+        if settings.broker_enabled:
+            from broker.policy import set_task_policy
+            allow_hosts = request.broker_policy.allow_egress_hosts if request.broker_policy else []
+            set_task_policy(task_id, allow_hosts)
+        else:
+            logger.debug("task %s: broker disabled, skipping policy setup", task_id)
 
         # ── Step 4: 构建容器 env ──────────────────────────────────────────────
         container_env = _build_container_env(task_id, request, settings)
@@ -128,6 +132,8 @@ async def run_task(task_id: str) -> None:
         await update_task_status(db, task_id, TaskStatus.starting_container)
 
         resource_limits = request.resource_limits
+        # local workspace：以 root 运行、关闭只读 FS（开发/测试模式，用户已知悉安全风险）
+        is_local = request.workspace.kind == "local"
         spec = ContainerSpec(
             task_id=task_id,
             image=settings.sandbox_image,
@@ -138,9 +144,11 @@ async def run_task(task_id: str) -> None:
             memory_limit=str(resource_limits.memory) if resource_limits else "4g",
             pids_limit=resource_limits.pids if resource_limits else 512,
             network_name=WORKER_DOCKER_NETWORK,
-            broker_host=settings.broker_host,
-            broker_port=settings.broker_port,
+            broker_host=settings.broker_host if settings.broker_enabled else None,
+            broker_port=settings.broker_port if settings.broker_enabled else None,
             timeout_sec=resource_limits.timeout_sec if resource_limits else 1800,
+            container_user="0:0" if is_local else "1000:1000",
+            read_only=not is_local,
         )
         container = await start_container(spec)
 
@@ -173,7 +181,7 @@ async def run_task(task_id: str) -> None:
 
     finally:
         # ── 清理：无论成功失败都执行 ──────────────────────────────────────────
-        await _cleanup(task_id, workspace_dir)
+        await _cleanup(task_id, workspace_dir, workspace_kind=request.workspace.kind)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -216,7 +224,7 @@ async def _drive_opencode(
 # 清理
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def _cleanup(task_id: str, workspace_dir: Optional[Path]) -> None:
+async def _cleanup(task_id: str, workspace_dir: Optional[Path], workspace_kind: str = "empty") -> None:
     """任务终态后清理容器 + workspace + broker policy。"""
     # 停止并删除容器
     try:
@@ -225,19 +233,21 @@ async def _cleanup(task_id: str, workspace_dir: Optional[Path]) -> None:
     except Exception as exc:
         logger.warning("task %s: container cleanup error: %s", task_id, exc)
 
-    # 清理工作区
-    if workspace_dir is not None:
+    # 清理工作区（local 模式跳过，避免删除宿主机原始目录）
+    if workspace_dir is not None and workspace_kind != "local":
         try:
             await cleanup_workspace(workspace_dir)
         except Exception as exc:
             logger.warning("task %s: workspace cleanup error: %s", task_id, exc)
 
-    # 移除 broker policy
-    try:
-        from broker.policy import remove_task_policy
-        remove_task_policy(task_id)
-    except Exception as exc:
-        logger.warning("task %s: broker policy cleanup error: %s", task_id, exc)
+    # 移除 broker policy（仅在 broker 启用时）
+    settings = get_settings()
+    if settings.broker_enabled:
+        try:
+            from broker.policy import remove_task_policy
+            remove_task_policy(task_id)
+        except Exception as exc:
+            logger.warning("task %s: broker policy cleanup error: %s", task_id, exc)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -286,15 +296,25 @@ def _build_container_env(
     if profile:
         if profile.model:
             config_content["model"] = profile.model
-        # 透传 provider API key（使用 {env:VAR} 替换，由 opencode 在容器内解析）
-        if profile.providers:
-            providers_block: dict = {}
-            for provider in profile.providers:
-                key_env_var = _provider_key_env_var(provider)
-                if key_env_var:
-                    providers_block[provider] = {"apiKey": f"{{env:{key_env_var}}}"}
-            if providers_block:
-                config_content["providers"] = providers_block
+        # 构建 provider 块：先用 provider_extra_config 作为基础，再注入 apiKey
+        providers_block: dict = {}
+        # 合并 provider_extra_config（自定义 npm/name/options/models 等）
+        if profile.provider_extra_config:
+            import copy
+            for p, extra in profile.provider_extra_config.items():
+                providers_block[p] = copy.deepcopy(extra)
+        # 为 providers 列表中声明的 provider 注入 apiKey（若有环境变量映射）
+        for provider in (profile.providers or []):
+            key_env_var = _provider_key_env_var(provider)
+            if key_env_var:
+                entry = providers_block.setdefault(provider, {})
+                opts = entry.setdefault("options", {})
+                # 仅在未明确设置 apiKey 时才注入
+                if "apiKey" not in opts:
+                    opts["apiKey"] = f"{{env:{key_env_var}}}"
+        if providers_block:
+            # opencode 配置 key 为 "provider"（单数）
+            config_content["provider"] = providers_block
 
     # 权限模板
     permission_json = _build_permission_json(
@@ -307,12 +327,14 @@ def _build_container_env(
         "OPENCODE_CONFIG_CONTENT": json.dumps(config_content),
         "OPENCODE_DISABLE_AUTOUPDATE": "1",
         "OPENCODE_PERMISSION": permission_json,
-        # broker proxy（容器出站流量通过 broker）
-        "HTTP_PROXY": f"http://broker:{settings.broker_port}",
-        "HTTPS_PROXY": f"http://broker:{settings.broker_port}",
-        # task_id 供 broker 白名单检查使用
-        "WORKER_TASK_ID": task_id,
     }
+
+    # broker proxy（仅当 broker_enabled=True 时注入，否则容器直连外网）
+    if settings.broker_enabled:
+        env["HTTP_PROXY"] = f"http://broker:{settings.broker_port}"
+        env["HTTPS_PROXY"] = f"http://broker:{settings.broker_port}"
+        # task_id 供 broker 白名单检查使用
+        env["WORKER_TASK_ID"] = task_id
 
     # 透传 provider API keys（从 Worker 进程 env 复制到容器 env）
     if request.env_policy:
@@ -335,6 +357,8 @@ def _provider_key_env_var(provider: str) -> Optional[str]:
         "openai": "OPENAI_API_KEY",
         "alibaba": "ALIBABA_API_KEY",
         "alibaba-cn": "ALIBABA_CN_API_KEY",
+        "alibabacloud": "DASHSCOPE_API_KEY",
+        "dashscope": "DASHSCOPE_API_KEY",
         "deepseek": "DEEPSEEK_API_KEY",
         "gemini": "GEMINI_API_KEY",
     }

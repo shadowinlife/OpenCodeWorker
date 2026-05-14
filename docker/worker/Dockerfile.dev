@@ -1,0 +1,71 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# worker-sandbox:dev
+#
+# 在 worker-sandbox:latest 基础上追加 Python 数据分析环境，供本地 E2E 测试使用。
+# 不使用 conda——所有包在构建时通过 pip3 直接预装到系统 Python。
+#
+# 预装包：
+#   - python3 / python3-pip（Ubuntu 24.04 系统包）
+#   - duckdb        — 本地 DuckDB 数据库查询
+#   - pandas        — 数据处理
+#   - numpy         — 数值计算
+#   - requests      — HTTP 同步请求
+#   - httpx         — HTTP 异步请求
+#
+# 运行时说明：
+#   local workspace 模式下容器以 root（0:0）运行、关闭只读 FS，
+#   因此 Python / DuckDB 可正常读写宿主机挂载目录（/workspace）。
+#
+# 构建命令：
+#   docker build -t worker-sandbox:dev \
+#     -f docker/worker/Dockerfile.dev .
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM worker-sandbox:phase2.5
+
+USER root
+
+# 安装 Python 3 及 pip
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装量化分析 Python 包
+# --break-system-packages 绕过 Ubuntu 24.04 的 PEP 668 保护（容器内无影响）
+RUN pip3 install --no-cache-dir --break-system-packages \
+        "duckdb>=1.0" \
+        "pandas>=2.0" \
+        "numpy>=1.26" \
+        "requests>=2.31" \
+        "httpx>=0.27"
+
+# 预建 DuckDB 主目录（root 和 sandbox 用户均需要）
+RUN mkdir -p /root/.duckdb /home/sandbox/.duckdb
+
+# 将 oh-my-openagent 插件缓存复制到 root 用户目录
+# （base 镜像中只安装在 /home/sandbox/.cache；local 模式以 root 运行时需要 /root/.cache）
+RUN mkdir -p /root/.cache/opencode/packages && \
+    cp -r /home/sandbox/.cache/opencode/packages/. /root/.cache/opencode/packages/
+
+# 预装 @ai-sdk/openai-compatible npm 包缓存到 sandbox 和 root 两个用户目录
+# opencode 在 POST /session 时需要加载此包；无缓存时会尝试 npm 在线安装，
+# 在 QEMU 模拟环境下超慢（>30s 超时），导致 create_session 挂死。
+COPY docker/worker/dist/ai-sdk-openai-compatible-cache.tar.gz /tmp/aisdk-cache.tar.gz
+RUN cd /home/sandbox/.cache/opencode/packages && \
+    tar xzf /tmp/aisdk-cache.tar.gz --strip-components=1 && \
+    cd /root/.cache/opencode/packages && \
+    tar xzf /tmp/aisdk-cache.tar.gz --strip-components=1 && \
+    rm /tmp/aisdk-cache.tar.gz && \
+    chown -R sandbox:sandbox /home/sandbox/.cache
+
+# 覆盖 entrypoint（修复 --hostname 0.0.0.0，使 Docker 端口映射 DNAT 正常工作）
+COPY docker/worker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# 不写入 .pyc 字节码，输出不缓冲（适合容器日志采集）
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# local 模式下由 orchestrator 通过 --user 0:0 覆盖，此处保持基础镜像默认
+USER sandbox

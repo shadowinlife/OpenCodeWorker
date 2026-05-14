@@ -46,8 +46,9 @@ echo "[entrypoint] starting opencode serve on port ${PORT}"
 
 # 启动 opencode serve
 # - OPENCODE_CONFIG_CONTENT 和 OPENCODE_PERMISSION 已在 env 中，opencode 会自动读取
-# - --hostname 127.0.0.1 防止容器内 opencode 监听 0.0.0.0（不必要的暴露）
+# - --hostname 0.0.0.0 使 opencode 监听所有接口，Docker 端口映射（DNAT）才能正常转发
 #   注：Worker 通过 docker -p 将宿主端口映射到容器 4096，从容器外访问 127.0.0.1:<host_port>
 exec opencode serve \
-    --hostname "127.0.0.1" \
-    --port "${PORT}"
+    --hostname "0.0.0.0" \
+    --port "${PORT}" \
+    --print-logs

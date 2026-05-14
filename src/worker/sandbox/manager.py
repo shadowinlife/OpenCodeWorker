@@ -100,6 +100,9 @@ class ContainerSpec:
         broker_host: Optional[str] = None,
         broker_port: Optional[int] = None,
         timeout_sec: int = 1800,
+        # dev 模式：local workspace 时以 root 运行、关闭只读 FS
+        container_user: str = "1000:1000",
+        read_only: bool = True,
     ) -> None:
         self.task_id = task_id
         self.image = image
@@ -113,6 +116,8 @@ class ContainerSpec:
         self.broker_host = broker_host
         self.broker_port = broker_port
         self.timeout_sec = timeout_sec
+        self.container_user = container_user
+        self.read_only = read_only
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -177,8 +182,8 @@ def _start_container_sync(spec: ContainerSpec) -> Container:
         "environment": spec.env,
         "volumes": volumes,
         "tmpfs": tmpfs,
-        "read_only": True,
-        "user": "1000:1000",
+        "read_only": spec.read_only,
+        "user": spec.container_user,
         "cap_drop": ["ALL"],
         "security_opt": security_opt,
         "pids_limit": spec.pids_limit,
@@ -188,7 +193,9 @@ def _start_container_sync(spec: ContainerSpec) -> Container:
         "extra_hosts": extra_hosts,
         "restart_policy": {"Name": "no"},
         # 端口映射：宿主随机端口 → 容器 opencode_port
-        "ports": {f"{OPENCODE_CONTAINER_PORT}/tcp": spec.opencode_port_host},
+        # 注：HostIp="127.0.0.1" 迫使 Lima/Colima 创建 docker-proxy 进程，从而
+        #   在 macOS 宿主机上实现端口转发（HostIp="" 时 Lima 使用 iptables DNAT 无法转发）
+        "ports": {f"{OPENCODE_CONTAINER_PORT}/tcp": ("127.0.0.1", spec.opencode_port_host)},
     }
 
     logger.info(
@@ -275,8 +282,8 @@ def _get_container_sync(task_id: str) -> Optional[Container]:
 async def ensure_worker_network(network_name: str) -> None:
     """确保隔离 Docker network 存在，不存在时创建。
 
-    使用 internal=True 禁止容器访问外部网络（仅能访问同一 network 内的容器）。
-    Broker 容器也连接到此 network，成为容器的唯一出口。
+    使用 bridge 网络（internal=False），容器可访问外网（DashScope 等 API）及宿主端口映射。
+    网络隔离由 seccomp/cap_drop 等容器安全策略保障，而非网络 internal 标志。
     """
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _ensure_network_sync, network_name)
@@ -285,16 +292,21 @@ async def ensure_worker_network(network_name: str) -> None:
 def _ensure_network_sync(network_name: str) -> None:
     client = get_docker_client()
     try:
-        client.networks.get(network_name)
+        existing = client.networks.get(network_name)
+        # 若已存在的网络是 internal=True，删除重建（修复历史创建）
+        if existing.attrs.get("Internal", False):
+            logger.info("docker network %s is internal=True, removing to recreate", network_name)
+            existing.remove()
+            raise docker.errors.NotFound(network_name)
         logger.debug("docker network %s already exists", network_name)
     except docker.errors.NotFound:
         client.networks.create(
             name=network_name,
             driver="bridge",
-            internal=True,   # 禁止容器直接访问外网
+            internal=False,  # 允许容器访问外网（DashScope API 等），端口映射由 Lima 转发
             labels={WORKER_LABEL: "true"},
         )
-        logger.info("created docker network: %s (internal=True)", network_name)
+        logger.info("created docker network: %s (internal=False)", network_name)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -379,7 +391,7 @@ async def wait_for_opencode_health(
                             data,
                         )
                         return
-            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
                 logger.debug(
                     "opencode health attempt %d/%d: %s", attempt, max_retries, exc
                 )
@@ -398,9 +410,22 @@ async def wait_for_opencode_health(
 def _parse_memory(value: str) -> int:
     """将人类可读内存字符串转换为字节数。
 
-    支持：4g, 4G, 512m, 512M, 1024k, 1024K
+    支持：4g, 4G, 4Gi, 4GiB, 512m, 512M, 512Mi, 1024k, 1024K, 1024Ki
     """
     value = value.strip()
+    # IEC 二进制前缀（Gi/Mi/Ki，与 g/m/k 同义均按 1024 进制）
+    if value.endswith(("GiB", "GIB")):
+        return int(float(value[:-3]) * 1024 ** 3)
+    if value.endswith(("MiB", "MIB")):
+        return int(float(value[:-3]) * 1024 ** 2)
+    if value.endswith(("KiB", "KIB")):
+        return int(float(value[:-3]) * 1024)
+    if value.endswith(("Gi", "GI")):
+        return int(float(value[:-2]) * 1024 ** 3)
+    if value.endswith(("Mi", "MI")):
+        return int(float(value[:-2]) * 1024 ** 2)
+    if value.endswith(("Ki", "KI")):
+        return int(float(value[:-2]) * 1024)
     if value.endswith(("g", "G")):
         return int(float(value[:-1]) * 1024 ** 3)
     if value.endswith(("m", "M")):

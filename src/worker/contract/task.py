@@ -139,10 +139,14 @@ class WorkspaceSpec(BaseModel):
     git:
         克隆指定 Git 仓库到工作区，见 GitSpec。
 
+    local:
+        直接挂载宿主机本地目录（仅用于开发/测试，不做任何隔离或清理）。
+        - local_path: 宿主机绝对路径，直接 bind mount 到容器 /workspace
+
     注意：工作区目录在任务结束后会被压缩为产物（workspace_snapshot），
-    保留 artifact_retention_days 天后自动清理。
+    保留 artifact_retention_days 天后自动清理。local 模式跳过清理。
     """
-    # 初始化方式：empty | tarball | git
+    # 初始化方式：empty | tarball | git | local
     kind: str = "empty"
     # tarball 方式：远程 URL（优先）
     tarball_url: Optional[str] = None
@@ -150,6 +154,8 @@ class WorkspaceSpec(BaseModel):
     tarball_inline_b64: Optional[str] = None
     # git 方式
     git: Optional[GitSpec] = None
+    # local 方式（仅开发/测试）：宿主机绝对路径
+    local_path: Optional[str] = None
 
 
 class PermissionTemplate(str, Enum):
@@ -192,10 +198,22 @@ class OpencodeProfile(BaseModel):
             在模板基础上的细粒度覆盖，格式：
             {"bash": "allow", "write_file": "deny"}
             键名与 opencode 内部工具名完全一致（区分大小写）。
+
+        providers:
+            需要在 opencode config 中显式声明的 provider 名称列表，例如：
+            ["openai", "anthropic"]
+            Worker 会为每个 provider 自动注入对应的 API key 占位符。
+
+        provider_extra_config:
+            每个 provider 的额外配置，例如自定义 baseURL：
+            {"openai": {"baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1"}}
+            这些配置会合并到 OPENCODE_CONFIG_CONTENT 的 providers 块中。
     """
     model: str = "anthropic/claude-opus-4-5"
     permission_template: PermissionTemplate = PermissionTemplate.plan_first_default
     permission_overrides: dict[str, Any] = Field(default_factory=dict)
+    providers: list[str] = Field(default_factory=list)
+    provider_extra_config: dict[str, dict] = Field(default_factory=dict)
 
 
 class EnvPolicy(BaseModel):
