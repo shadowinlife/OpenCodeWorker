@@ -1,8 +1,23 @@
 # Safe OpenCode Worker — Roadmap
 
 > 本文档是 `VibeTradingOpenCodeWorker` 仓库的实施路线图。
-> 当前阶段：**Phase 1 已完成（Worker Contract & API 骨架，本机 smoke test 通过）**。
-> 2026-05-13 已补充 opencode / oh-my-opencode 本机自检证据，见 §1.3。
+>
+> **当前阶段（2026-05-14）**：
+> - ✅ **Phase 0 — 已归档**：基线/技术 spike 完成，ADR-001~006 全部 Accepted。
+> - ✅ **Phase 1 — 已归档**：Worker Contract & API 骨架，本机 smoke test 通过（见 §1.4）。
+> - ✅ **Phase 2 — 已归档**：Docker Sandbox + Workspace **代码实现完成**；镜像构建 + 安全回归 7/7 PASS（2026-05-14，见 Phase 2.5 退出检查）。
+>   - ⚠️ **Broker 出口代理推迟到 Phase 7**：CONNECT 隧道占位、broker 进程未在 lifespan 启动（P0-1 / P0-3）；MVP 阶段 `WORKER_BROKER_ENABLED` 默认 `false`，容器网络 `internal=False`（P0-2 已确认 MVP 接受降级）。详见 [code-review-2026-05-14.md](../code-review-2026-05-14.md) 与 [ADR-004 实现状态表](../adr/ADR-004-broker-boundary.md)。
+> - ✅ **Phase 3 — 已归档**：OpenCode HTTP Adapter + oh-my agent 路由 + HITL 接入，E2E 天齐锂业分析跑通。
+>   - ⚠️ agent 名误用为 `plan`/`build`（P0-5），需改回 `Prometheus`/`Sisyphus`。
+> - ✅ **Phase 5 — 已归档**：HITL 闭环、超时事件、mode escalation、断线重连。
+>   - ⚠️ `on_timeout="continue|escalate"`、`auto_approve` 字段未实现（P1-13 / P1-14）。
+> - 🟡 **Phase 6 — 部分完成，待收尾**：metrics / logging 框架已就位，**但 metrics 计数器无 callsite**（P1-11）；集成测试套与安全回归脚本待自动化。
+> - ⬜ **Phase 7** — 规划中（多租户 / 加密 / 跨节点等）。
+>
+> **2026-05-14 全量 code review 输出**：[code-review-2026-05-14.md](../code-review-2026-05-14.md)
+> 包含 8 项 P0（安全 / 契约失真）、12 项 P1（可靠性）、8 项 P2（质量）以及测试覆盖缺口列表。下文各 Phase 已交付项中以 `[REVIEW: P0-N]` 标记的位置对应 review 中的具体 finding。
+>
+> 2026-05-13 opencode / oh-my-opencode 本机自检证据，见 §1.3。
 > 2026-05-13 Phase 1 骨架实现完成并本机验证，见 §1.4。
 > 后续若执行中出现新的人工决策点，按 `🟠 HITL` 标注追加。
 
@@ -20,7 +35,7 @@
 
 | 维度 | 决策 |
 |---|---|
-| Host Broker | **本仓库交付 broker MVP**，仅做 **HTTP egress 代理 + 域名白名单**；不参与 MCP 生命周期 |
+| Host Broker | **MVP 阶段不交付完整 broker 出口代理**：CONNECT 隧道与 broker 进程启停推迟到 Phase 7（详见 ADR-004 / code-review-2026-05-14 P0-1/2/3）；`src/broker/policy.py` 与 HTTP forward proxy 已实装但 lifespan 未启动；MVP 默认 `WORKER_BROKER_ENABLED=false`、`internal=False`，容器可直连外网 |
 | MCP 形态 | **MVP 内所有 MCP 均为 stdio 本地服务并打包进镜像**（与 opencode/oh-my-opencode 一起版本 pin），不引入 HTTP/SSE MCP |
 | 出网策略 | **域名级白名单** + **按 task 动态下发**（TaskRequest.broker_policy.allow_egress_hosts）；MVP 默认空，必须显式放行 |
 | LLM 凭据 | **容器 env 注入 provider API key**；容器启动时基于 env 生成 opencode 配置文件，不挂载宿主登录态；零密钥/broker 凭据代理移 Phase 7 |
@@ -46,169 +61,26 @@
 - 业务层：vibe-trading skills、数据源 MCP、策略/回测/交易执行。
 - 订阅态 LLM 登录（Claude Code / Codex / Gemini CLI），仅支持 API key。
 - 容器自由外网访问；仅允许通过宿主 broker 的域名白名单。
+  > ⚠️ **2026-05-14 修订**：MVP 阶段此条**未达成**——broker CONNECT 隧道与进程启停推迟到 Phase 7，容器实际可直连任意外网。详见 ADR-004 与 README §MVP 安全模型现状。
+  > **§H1b（域名级白名单）实现推迟到 broker 联通之后**——白名单代码 (`src/broker/policy.py`) 已就位，但在 broker 真正接管出站流量前不会实际生效。
 - 挂载用户主目录或宿主项目根目录为可写。
 - HTTP/SSE 远程 MCP；MCP 全部 stdio + 随镜像发布。
 - Broker 零密钥凭据代理、MCP server spawn/kill、跨重启任务续跑、`safe_explore` 只读模式、静态加密、cosign 镜像签名。
 
-### 1.3 2026-05-13 本机自检证据
+### 1.3 技术基线（已验证，2026-05-13~14）
 
-本节记录已经实际验证过的事实，避免后续实现时回到猜测状态。当前开发机为 macOS；目标真实执行环境按 x86_64/Linux 容器规划。本机 `CPU lacks AVX support` warning 已明确不作为当前阻塞项。
+| 验证项 | 结论 |
+|---|---|
+| opencode `1.14.30` serve endpoints | health/SSE/session/message/prompt_async/diff/abort/permissions 全部实测通过 |
+| `OPENCODE_CONFIG_CONTENT` + `{env:X}` 注入 | 纯 env 注入确认；`GET /config` 可校验配置 |
+| `OPENCODE_PERMISSION` 注入 | 实测有效，白名单注入正常 |
+| `OPENCODE_DISABLE_AUTOUPDATE=1` | 验证有效，双层禁用已写入 ADR-002 |
+| oh-my-opencode `3.17.5` CLI smoke tests | Prometheus + Sisyphus 宿主机通过 |
+| 容器内 oh-my-openagent 加载 | `GET /agent` 实测：未自动加载；MVP 走内置 plan/build agent（ADR-001/ADR-006）|
+| 镜像 `worker-sandbox:1.14.30-3.17.2-phase2.5` | 370MB，安全回归 7/7 PASS |
+| Phase 1 API 骨架 smoke test | 10 端点全部通过（2026-05-13）|
 
-#### opencode 基线
-
-- 官方 server 文档存在：`https://opencode.ai/docs/en/server/`（页面更新时间：2026-05-13）。它明确 `opencode serve` 是 headless HTTP server，并列出 Server APIs。
-- 官方用法：`opencode serve [--port <number>] [--hostname <string>] [--cors <origin>]`；默认 port `4096`、hostname `127.0.0.1`；另有 `--mdns` / `--mdns-domain`。
-- 官方认证规则：设置 `OPENCODE_SERVER_PASSWORD` 后启用 HTTP Basic Auth；用户名默认 `opencode`，也可用 `OPENCODE_SERVER_USERNAME` 覆盖。本机自检仅验证了默认用户名路径。
-- 官方 API 文档列出的 Worker 相关主路径包括：`GET /global/health`、`GET /global/event`、`GET|POST /session`、`POST /session/:id/message`、`POST /session/:id/prompt_async`、`POST /session/:id/command`、`GET /session/:id/diff`、`POST /session/:id/abort`、`POST /session/:id/permissions/:permissionID`。
-- `opencode` 可执行文件存在：`/usr/local/bin/opencode`。
-- `opencode --version` 输出版本：`1.14.30`。
-- `opencode serve --hostname 127.0.0.1 --port 41913` 可启动 headless server。
-- Basic Auth 实测规则：用户名必须是 `opencode`，密码来自 `OPENCODE_SERVER_PASSWORD`。
-  - `opencode:local-selfcheck` -> `/global/health` 返回 `200`。
-  - `:local-selfcheck`、`x:local-selfcheck`、`local-selfcheck:` -> 返回 `401`。
-- `/global/health` 实测返回：`{"healthy":true,"version":"1.14.30"}`。
-- `/global/event` SSE 可连接，首条事件包含 `server.connected`。
-- `/session` API 可用：`POST /session` 能创建空 session，`GET /session` 能列出，`DELETE /session/:id` 能删除；自检 session 已删除，最终列表为空。
-- OpenAPI 路径存在版本差异：
-  - `/doc` 返回 OpenAPI `3.1.1`，但本机 `1.14.30` 下只暴露少量 global paths（如 `/auth/{providerID}`、`/log`）。
-  - `/openapi.json` 实测返回 Web UI HTML，不是 JSON。
-  - 结论：Worker adapter 以官方 server 文档作为 API 地图，以当前 pin 版本实测 fixture 锁定请求/响应细节，并在 ADR 中记录差异。
-
-#### opencode endpoint spike（2026-05-13 续测）
-
-本轮使用临时 server：`OPENCODE_SERVER_PASSWORD=endpoint-spike opencode serve --hostname 127.0.0.1 --port 41914`。测试 session 已全部删除，41914 端口已关闭。
-
-- `/session/:id/message`
-  - `POST` 存在；缺少 `parts` 时返回 `400`，错误路径为 `parts`，要求 array。
-  - `POST` body 实测最小形态：`{"noReply":true,"parts":[{"type":"text","text":"..."}]}`。
-  - `noReply:true` 返回 `200`，响应形态为 `{"info": {...}, "parts": [...]}`，只写入 user message，不触发 assistant 回复。
-  - `GET /session/:id/message` 返回 message array，每条为 `{"info": {...}, "parts": [...]}`；不是顶层 `id/role/parts` 扁平结构。
-- `/session/:id/prompt_async`
-  - `POST` 存在；缺少 `parts` 时返回 `400`，错误路径为 `parts`，要求 array。
-  - `POST` body 实测最小形态：`{"parts":[{"type":"text","text":"..."}]}`。
-  - 成功时立即返回 `204 No Content`；最终输出不在 HTTP response body，而在 `/global/event` SSE 与后续 `GET /session/:id/message` 中读取。
-  - 未显式传 `agent/model` 时，本机配置会走 `Sisyphus - Ultraworker` + `alibaba-cn/deepseek-v4-pro`，并注入 oh-my 的 analyze-mode prompt。Worker 应显式设置 agent/model，避免隐式默认值影响 mode routing。
-- `/global/event`
-  - 事件为 `data: { ... }` SSE frame，无显式 SSE `id:` 字段；payload 内包含 `payload.type`。
-  - 实测事件类型包括：`server.connected`、`server.heartbeat`、`message.updated`、`message.part.updated`、`message.part.delta`、`session.updated`、`session.status`、`session.diff`、`session.idle`、`sync`。
-  - `session.status` 在运行中出现 `busy`，完成或 abort 后出现 `idle`。
-  - `sync` 事件中有 `syncEvent.id` / `seq` / `aggregateID`，可作为内部游标候选；Worker SSE 对上游仍应生成自己的单调 `event_id`。
-- `/session/:id/diff`
-  - 正确方法是 `GET`；无 diff 时返回 `200 application/json`，body 为 `[]`。
-  - `POST /session/:id/diff` 命中 Web UI HTML fallback，不应作为 API 使用。
-  - SSE 中也会出现 `session.diff`，payload 内含 `diff: []` 或实际 diff。
-- `/session/:id/abort`
-  - 正确方法是 `POST`；空 body 即可，返回 `200 true`。
-  - 对 idle session 调用也返回 `true`。
-  - 对 busy `prompt_async` 立即 abort 时，事件流出现 `session.status: busy -> idle` 与 `session.idle`；assistant message 可能已创建但 `parts` 为空。
-- `/session/:id/permissions/:permissionID`
-  - 正确方法是 `POST`；`permissionID` 必须以 `per` 开头，否则返回 `400`。
-  - body schema：`{"response":"once|always|reject"}`。
-  - `once`、`reject` 实测返回 `200 true`；`allow`、`deny`、`approve` 均返回 `400`，合法值只有 `once|always|reject`。
-  - 本轮未触发真实工具 permission request，只验证了 response endpoint schema。后续 HITL spike 仍需通过 ask policy 触发真实 `per_*` 请求并确认事件 payload。
-- 前端 bundle 反查确认的相关路由还包括：`GET /session/:id`、`GET /session/:id/todo`、`GET /session/status`、`POST /session/:id/init`、`POST /session/:id/fork`、`DELETE /session/:id/message/:messageID`、`GET /vcs/diff`。这些不进入当前 MVP 主路径，除非后续 adapter 需要。
-
-#### oh-my-opencode 基线
-
-- `omo` / `oh-my-opencode` 不在 PATH，但 npx 缓存里已有 CLI wrapper：
-  - `~/.npm/_npx/47ababa9653307a4/node_modules/oh-my-opencode/bin/oh-my-opencode.js`
-- 本地 npx 缓存包版本：`oh-my-opencode 3.17.5`（CLI 工具）。
-- opencode 插件（`oh-my-openagent@latest`）在 opencode 包缓存中的版本：`3.17.2`（`~/.cache/opencode/packages/oh-my-openagent@latest/`，最近更新 2026-04-14）。
-- npm registry 最新版本：`oh-my-openagent 4.1.1`、`oh-my-opencode 4.1.1`（两者同步发布）。
-- **注意**：`oh-my-openagent`（opencode 插件）与 `oh-my-opencode`（CLI 工具）是两个不同 npm 包名，当前版本均为 `4.1.1`，但本机缓存 plugin 为 `3.17.2`、CLI 为 `3.17.5`。
-- opencode 全局插件配置声明：
-  - `./plugins/cr-aicc.mjs`
-  - `superpowers@git+https://github.com/obra/superpowers.git`
-  - `oh-my-openagent@latest`
-- server 启动日志显示 `oh-my-openagent@latest` 被加载，未见插件加载错误。
-- `oh-my-opencode doctor --status` 结果：
-  - System：OpenCode `1.14.30`，oh-my loaded plugin `3.17.2`（与 `oh-my-openagent@latest` 缓存版本一致），Bun `1.3.13`。
-  - Configuration：`~/.config/opencode/oh-my-openagent.json` valid。
-  - Tools：LSP 可见 5 servers；AST-Grep 不可用；GitHub CLI 已认证。
-  - MCPs：doctor 展示 builtin `context7`、`grep_app`。
-- `oh-my-opencode doctor --json` 识别出 `11 agents`、`8 categories`、`18 overrides`。
-- `opencode agent list` 不显示 Prometheus/Sisyphus/Metis/Momus；这不是 oh-my 不可用，而是 oh-my 有自己的 agent resolution。实现时不能用 `opencode agent list` 作为 oh-my agent 可用性的唯一判断。
-
-#### oh-my-opencode smoke tests
-
-- Prometheus 最小 smoke test 已通过：
-  - 命令入口：`oh-my-opencode run --agent Prometheus --model alibaba-cn/deepseek-v4-pro --directory "$PWD" --json ...`
-  - 运行输出标识：`Prometheus - Plan Builder`。
-  - 固定响应：`OMO_PROMETHEUS_SMOKE_OK`。
-  - JSON 结果：`success: true`。
-- Sisyphus / `ulw` 最小 smoke test 已通过：
-  - 命令入口：`oh-my-opencode run --agent Sisyphus --model alibaba-cn/deepseek-v4-pro --directory "$PWD" --json ...`
-  - Prompt 包含 `ulw smoke test`。
-  - 运行输出标识：`Sisyphus - Ultraworker`。
-  - 固定响应：`OMO_ULW_SMOKE_OK`。
-  - JSON 结果：`success: true`。
-- 两次 smoke test 都要求“不创建、不编辑、不删除、不读取文件、不运行 shell、不启动 background agents”；结果中 session summary 显示 `additions: 0`、`deletions: 0`、`files: 0`。
-- oh-my `run` 会启动 `opencode serve` 并可能留下监听进程；本次测试残留的 `4096` / `4097` server 已手动停止。Worker 实现必须负责 server/container lifecycle，不能假设 CLI run 会自动清理所有后台进程。
-
-#### MCP / provider / Docker 基线
-
-- `opencode auth list` 可见 3 组凭据：Alibaba、Alibaba China、GitHub Copilot。
-- `opencode mcp list` 实测本机用户配置中的 `search mcp` 与 `vibe-trading` 均 connected。
-- Docker daemon 可用，当前 context 为 Colima；daemon 环境：Linux / `aarch64` / 2 CPU / 约 2GB memory。
-- 本地没有 opencode 相关 Docker image。目标执行环境按 x86_64/Linux 规划，镜像 spike 仍需单独完成。
-
-#### Spike 1b：env 变量与 config 注入（2026-05-13）
-
-使用临时 server（`opencode serve --hostname 127.0.0.1 --port 41920/41921/41922`）进行以下验证，测试后 server 已全部关闭：
-
-- **`OPENCODE_DISABLE_AUTOUPDATE=1`**（boolean）：禁用自动更新检查，对应 H10 填回。与 `autoupdate: false` 配置项组合实现双层禁用，均已实测有效。
-- **`OPENCODE_CONFIG_CONTENT`**（string）：内联 JSON 配置注入，优先级最高（覆盖 global + project config）。实测设置 `autoupdate:false` 和 `model:` 字段，`GET /config` 返回值正确反映注入内容。
-- **`OPENCODE_PERMISSION`**（string）：内联 JSON 权限配置注入。实测 `{"bash":"ask","write":"ask","edit":"ask"}` 注入后，`GET /config` 的 `permission.*` 字段正确反映。
-- **`{env:VARIABLE_NAME}` 替换在 `OPENCODE_CONFIG_CONTENT` 中生效**（关键发现）：实测在 inline JSON 里写 `"apiKey": "{env:SPIKE_TEST_KEY}"` 并设置 `SPIKE_TEST_KEY=hello_from_env_var`，`GET /config` 返回已解析值 `hello_from_env_var`。这意味着 Worker **不需要写任何配置文件**，provider API key 可通过 `OPENCODE_CONFIG_CONTENT` + env 替换纯 env 方式注入。
-- **`OPENCODE_CONFIG_DIR`**：文档确认为「自定义配置目录（相当于 `.opencode/`，搜索 agents/commands/modes/plugins）」，与全局 config 文件路径不同（全局文件路径由 `OPENCODE_CONFIG` 控制）。本轮未单独测试文件访问；鉴于 `OPENCODE_CONFIG_CONTENT` 可满足 config 注入需求，容器方案不依赖此变量。
-- **oh-my-openagent 版本确认**：opencode 插件包 `oh-my-openagent@latest` 本机缓存版本为 **3.17.2**（npm latest：4.1.1）。server toast 事件显示 `OhMyOpenCode 3.17.2`，与缓存版本一致。见 ADR-006。
-- **真实 `per_*` permission 事件 payload**：本轮未触发（需要真实 LLM 调用且设置 bash:ask）。已知 response endpoint 的完整 schema，事件 payload 的字段细节（permissionID 出现的 SSE event type）推迟到 Phase 3 adapter 实现时通过集成测试确认。
-
----
-
-### 1.4 2026-05-13 Phase 1 本机验证证据
-
-本节记录 Phase 1 骨架实现完成后的本机 smoke test 结果。
-运行环境：macOS + conda env `legonanobot` + Python 3.11 + FastAPI 0.135 + uvicorn 0.41。
-
-**实现清单（全部完成）：**
-
-| 文件 | 描述 |
-|------|------|
-| `src/worker/contract/task.py` | TaskRequest / TaskResponse / TaskStatus（14 状态）/ TERMINAL_STATUSES |
-| `src/worker/contract/event.py` | TaskEvent / TaskEventKind（18 种）/ TERMINAL_EVENT_KINDS |
-| `src/worker/contract/decision.py` | DecisionRequest / DecisionResponse / PendingDecision（HITL 5 步流程）|
-| `src/worker/contract/artifact.py` | Artifact / ArtifactType（9 种产物类型）|
-| `src/worker/contract/error.py` | WorkerError / ErrorKind（14 种，含 retryable/requires_hitl 分类）|
-| `src/worker/config.py` | Settings（pydantic-settings，WORKER_* 前缀，bearer_token 必须设置）|
-| `src/worker/storage/db.py` | SQLite init（4 张表），WAL 模式预留，进程单例连接 |
-| `src/worker/storage/repo.py` | 全参数化 SQL CRUD（tasks/events/decisions/artifacts），无 SQL 注入风险 |
-| `src/worker/orchestrator/queue.py` | asyncio.Queue + Semaphore + Phase 1 stub executor |
-| `src/worker/api/middleware.py` | BearerTokenMiddleware（hmac.compare_digest 防时序攻击）|
-| `src/worker/api/routes.py` | 全部 10 个端点（含 SSE Last-Event-ID 回放 + heartbeat）|
-| `src/worker/main.py` | FastAPI app + lifespan（init_db / start_queue_worker / close_db）|
-
-**Smoke test 结果（2026-05-13 本机实测，端口 18080~18082）：**
-
-- `GET /health` → `{"status":"ok","version":"0.1.0"}` ✅
-- `GET /ready` → `{"status":"ready","version":"0.1.0"}` ✅
-- 无 token 请求 → `401 unauthorized` ✅
-- `GET /tasks/nonexistent` with token → `404` ✅
-- `POST /tasks` → `201`，任务状态通过 Phase 1 stub 经 `pending→queued→starting_container→completed` 流转（约 5ms）✅
-- `GET /tasks/:id` → `{"status":"completed",...}` ✅
-- 重复 `task_id` → `409 Conflict` ✅（幂等保护有效）
-- SSE `GET /tasks/:id/events` → 回放 4 条历史事件（task_created / task_queued / task_started / task_completed），格式 `id: N\nevent: kind\ndata: {}\n\n` ✅
-- `POST /tasks/:id/abort`（已终态）→ `409` ✅
-- `GET /tasks/:id/artifacts` → `[]` ✅
-
-**已知 Phase 1 限制（Phase 2 解决）：**
-
-- Phase 1 stub executor 直接将任务标为 completed，无真实 Docker 容器操作。
-- `abort` 端点只修改 DB 状态，不向容器发送 stop 信号（Phase 2 实现）。
-- HITL decisions、artifacts 下载端点逻辑完整，但需要 Orchestrator 写入真实 artifacts 才能测试下载。
-- heartbeat 轮询间隔为 0.5s（适合开发），生产建议调整 `sse_heartbeat_sec` 配置。
-
----
+> 详细 spike 实测记录已归档，可通过 git history 查阅。
 
 ## 2. 架构总览
 
@@ -237,7 +109,7 @@
 │ Sandbox Manager (docker SDK)                            │
 │  - 一任务一容器、reaper、镜像 pin                       │
 │  - 非 root / cap-drop / no-new-privileges / tmpfs       │
-│  - 默认无外网，仅可访问 Host Broker                     │
+│  - MVP：可直连外网（broker 推迟到 Phase 7，见 ADR-004）  │
 ├─────────────────────────────────────────────────────────┤
 │ Workspace Manager                                       │
 │  - tar.gz / git 解包、symlink/zip-slip 防护             │
@@ -248,10 +120,11 @@
 └──────────────────────────┬──────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────┐
-│ Host Broker (本仓库交付)                                │
+│ Host Broker (Phase 7 交付，MVP 不联通)                  │
 │  - HTTP egress 代理（域名白名单 + 审计 hook）           │
 │  - 不管理 MCP 生命周期；MVP MCP 为容器内 stdio 服务     │
 │  - ACL / rate-limit / audit hook                        │
+│  ⚠️ MVP 阶段此组件未在 lifespan 启动；容器直连外网      │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -367,167 +240,80 @@ pending
 
 ## 5. Roadmap 分阶段
 
-### Phase 0 — 基线与技术 spike
+### Phase 0 — 基线与技术 spike ✅
 
-**目标**：固定运行边界，验证关键不确定性。
+**交付物**：ADR-001~006 全部落地；Spike 1a/1b/3 完成（证据见 §1.3）。Spike 4/5（env 注入完整流程、Broker 原型）推迟至 Phase 7。
 
-- [x] 本机 opencode / oh-my-opencode 安装验证：`opencode --version`、`oh-my-opencode doctor --status/--json`、Prometheus/Sisyphus smoke tests；证据见 §1.3。
-- [x] **Spike 1a**：`opencode serve` endpoint spike；官方 server 文档已确认 serve/API/auth 主路径，且本机已验证 health/SSE/session/message/prompt_async/diff/abort/permission response schema/password，证据见 §1.3。
-- [x] **Spike 1b**：runtime 配置 spike 完成；确认 `OPENCODE_DISABLE_AUTOUPDATE=1`、`OPENCODE_CONFIG_CONTENT` 内联注入（含 `{env:X}` 替换）、`OPENCODE_PERMISSION` 注入；ADR-003 凭据方案升级为纯 env 注入（无需写文件）；oh-my 插件版本确认为 3.17.2；真实 `per_*` 事件 payload 推迟到 Phase 3 集成测试（非阻塞）；证据见 §1.3 Spike 1b 小节。
-- [x] **Spike 2**：~~`opencode CLI + tmux/PTY` 可行性 POC~~ — **ADR-001 已正式关闭此选项**；HTTP Server 路径已充分验证，不做 PTY POC。
-- [x] **Spike 3**：ubuntu:24.04 基础镜像（离线 COPY 策略）+ opencode 1.14.30 + oh-my-openagent 3.17.2 构建成功；镜像 `worker-sandbox:1.14.30-3.17.2-phase2.5`（370MB），安全回归 7/7 PASS；证据见 Phase 2.5 退出检查与 ADR-002。
-- [ ] **Spike 4**：容器内 env 注入 API key → 启动时生成 opencode 配置（auth.json / opencode.json）的完整流程。
-- [ ] **Spike 5**：Host Broker 最小原型（单机 HTTP forward proxy + 白名单），验证容器内 opencode 在仅有 broker 时仍能正常工作。
-- [ ] **ADR 输出**：
-  - [x] `ADR-001` HTTP Server vs CLI+tmux → **Accepted**（见 `docs/adr/ADR-001-opencode-adapter-mode.md`）：HTTP Server 唯一主路径；oh-my-openagent 以插件形式加载，`prompt_async` 传 `agent` 参数路由；CLI+tmux 与 oh-my run 黑盒均关闭；Phase 3/4 合并。
-  - [x] `ADR-002` 镜像基线 = **ubuntu:24.04**，opencode 1.14.30 离线 binary + oh-my-openagent 3.17.2 Bun bundle（见 `docs/adr/ADR-002-container-image-baseline.md`）；H10/H11 已收口；Phase 2.5 镜像构建与安全回归已验证。
-  - [x] `ADR-003` 凭据模型升级 = `OPENCODE_CONFIG_CONTENT` + `{env:X}` 替换，纯 env 注入无需写文件（见 `docs/adr/ADR-003-credential-model.md`）。
-  - [x] `ADR-004` Broker 责任边界与 MVP 形态（见 `docs/adr/ADR-004-broker-boundary.md`）。
-  - [x] `ADR-005` 实现语言 = Python（FastAPI + docker SDK + httpx）（见 `docs/adr/ADR-005-implementation-language.md`）。
-  - [x] `ADR-006` oh-my 版本 pin = `oh-my-openagent 3.17.2`，运行时入口为 HTTP API + `agent` 参数（见 `docs/adr/ADR-006-ohmy-version-and-entry.md`）；H11 收口。
-
-Phase 0 退出检查（无新 HITL，按 ADR 落实即可）：
-- ADR-001 ~ ADR-006 全部输出。
-- Spike 中如出现阻塞性问题（如 opencode 版本与基础镜像不兼容、stdio MCP 在容器内无法工作），追加 `🟠 HITL` 议题再讨论。
+| Spike | 结论 |
+|---|---|
+| Spike 1a — serve endpoints | HTTP Server 路径完整验证；CLI+tmux 已由 ADR-001 关闭 |
+| Spike 1b — runtime config | `OPENCODE_CONFIG_CONTENT` + `{env:X}` 纯 env 注入；ADR-003 升级 |
+| Spike 2 — PTY POC | 已取消（ADR-001）|
+| Spike 3 — 容器镜像 | `worker-sandbox:1.14.30-3.17.2-phase2.5`，安全回归 7/7 PASS |
+| ADR-001~006 | 全部 Accepted，见 `docs/adr/` |
 
 ---
 
-### Phase 1 — Worker Contract 与 API 骨架
+### Phase 1 — Worker Contract 与 API 骨架 ✅
 
-- [x] 仓库结构初始化：
-  ```
-  src/worker/            # FastAPI app
-    api/                 # routes
-    contract/            # pydantic schemas (TaskRequest 等)
-    orchestrator/        # state machine, queue
-    adapters/opencode/   # http server adapter
-    sandbox/             # docker manager, reaper
-    workspace/           # bundle handling
-    broker_client/       # 容器内/外通信契约
-    storage/             # sqlite + filesystem
-    observability/       # logging, metrics, tracing hooks
-  src/broker/            # Host Broker MVP
-  tests/
-  docs/
-  ```
-- [x] Pydantic schema 锁定 TaskRequest / TaskEvent / Decision / Artifact / Error。
-- [x] FastAPI 路由 shell + Bearer token middleware + 请求 trace_id 注入。
-- [x] SSE endpoint：支持 `Last-Event-ID` 重连、cursor 回放、heartbeat。
-- [x] 内置任务队列（asyncio + 持久化到 SQLite）；`max_concurrent_tasks` 配置；超出排队返回 `queued` 事件。
-- [x] Storage Lite：tasks / events / decisions / artifacts 表；事件 append-only + cursor 索引。
-- [x] Idempotency：基于 `task_id` 和 `decision.idempotency_key`。
-- [x] OpenAPI schema 自动导出供上游使用（FastAPI 自动生成，访问 `/docs`）。
+**交付物**：`src/worker/` 项目骨架完整初始化；Pydantic contract schemas（TaskRequest/TaskEvent/Decision/Artifact/Error）；FastAPI 10 端点含 Bearer token 中间件、SSE `Last-Event-ID` 回放、asyncio 任务队列、SQLite 4 表存储；smoke test 10/10 PASS（2026-05-13）。
 
 ---
 
 ### Phase 2 — Docker Sandbox + Workspace + Broker
 
-> **状态：✅ 全部完成（Phase 2 代码 commit df01b23；Phase 2.5 镜像构建 + 安全回归 2026-05-14）**
+> **状态：✅ 已归档（Phase 2 代码 commit df01b23；Phase 2.5 镜像构建 + 安全回归 2026-05-14）**
+>
+> **Review 警示（见 [code-review-2026-05-14.md](../code-review-2026-05-14.md)）**：
+> - `[REVIEW: P0-1]` Broker CONNECT 隧道是占位实现，HTTPS 出口实际不通。
+> - `[REVIEW: P0-2]` Sandbox 网络从 `internal=True` 退回 `internal=False`，绕过 broker 白名单——与 ADR-004 / §H1b 直接冲突。
+> - `[REVIEW: P0-3]` Broker 进程从未被 lifespan 启动，`HTTP_PROXY=http://broker:8090` 实际无人监听。
+> - `[REVIEW: P0-4]` `local` workspace 模式以 root + 关只读 FS 启动，绕过 MVP 沙箱安全策略。
+>
+> 上述四项不阻塞 Phase 2 归档（代码已落地、镜像已构建、安全回归用例 7/7 PASS），但需在 Phase 6 收尾或 Phase 7 准备前消化。
 
-- [x] Dockerfile：**ubuntu:24.04** + opencode 1.14.30（linux-x64 自包含二进制，离线 COPY）+ oh-my-openagent 3.17.2（Bun bundle，离线 COPY 缓存）+ sandbox 用户(uid 1000)；`OPENCODE_DISABLE_AUTOUPDATE=1`。
-  - `docker/worker/Dockerfile` + `docker/worker/entrypoint.sh`
-  - 构建材料：`docker/worker/dist/`（离线预包装，见 README）
-- [x] Sandbox 启动参数：`--read-only`、`--tmpfs /tmp`、`--cap-drop ALL`、`--security-opt no-new-privileges`、`--pids-limit`、`--memory`、`--nano_cpus`、自定义 network。
-  - 实现于 `src/worker/sandbox/manager.py`（`start_container`）
-- [x] 网络隔离：自建 docker network（`worker-sandbox-net`，`internal=True`）；Broker 作为唯一出口。
-  - `ensure_worker_network()` + `WORKER_DOCKER_NETWORK` 常量
-- [x] Workspace handling：
-  - tar.gz 解包：限大小（500MB 解压 / 200MB 下载 / 50MB inline）、防 zip-slip、禁绝对路径/symlink 逃逸。
-  - git clone（在 worker 进程侧执行，`--depth 1`；验证 https:// 协议 + 40 位完整 SHA）。
-  - 实现于 `src/worker/workspace/handler.py`
-- [x] Reaper / GC：基于 label（`worker.managed=true`）扫描孤儿容器；worker 启动时自动清理 + 将关联任务状态更新为 `failed`。
-  - `reap_orphaned_containers()` + main.py lifespan 调用
-- [x] Host Broker MVP：
-  - HTTP forward proxy + **域名级白名单**（按 task 动态下发，默认空）。
-  - SSRF 防护：RFC 1918 + loopback + link-local 黑名单。
-  - 审计 log（WARNING 级别，含 task_id）。
-  - Broker 配置接口：`POST /broker/tasks/:id/policy`（worker orchestrator 调用）。
-  - 实现于 `src/broker/proxy.py` + `src/broker/policy.py`
-- [x] Orchestrator：`src/worker/orchestrator/orchestrator.py`，完整生命周期驱动（workspace→network→policy→container→health→drive→cleanup）。
-- [x] 安全回归测试（2026-05-14）：
-  - `rm -rf /usr` → Read-only file system PASS
-  - `/etc/shadow` 读取 → Permission denied PASS
-  - `/etc/motd` 写入 → Read-only file system PASS
-  - `/tmp` 写入 → tmpfs 允许 PASS
-  - 网络隔离（`--network none`）→ curl 未安装 + 无网络栈 PASS
-  - `--cap-drop ALL --security-opt no-new-privileges` → setuid 被阻止 PASS
-  - `--pids-limit 20` → 超额进程被 Abort PASS
-
-Phase 2 退出检查：
-- [x] 代码实现完成，语法检查（30 文件）全部通过，/health smoke test 通过。
-- [x] 镜像 `worker-sandbox:1.14.30-3.17.2-phase2.5`（Image ID `0dea2aca968d`）本地构建成功（370MB，ubuntu:24.04 base）；ADR-002 已记录 pin 版本。
-- [x] 安全回归测试全部通过（7/7 PASS，2026-05-14）。
+**主要交付**：Dockerfile（ubuntu:24.04 + opencode 1.14.30 + oh-my 3.17.2，sandbox uid 1000，`--read-only/cap-drop/pids-limit`）；`sandbox/manager.py` 完整生命周期；`workspace/handler.py`（zip-slip/symlink 防逃逸）；`broker/proxy.py` 域名白名单 SSRF 防护；Orchestrator 全链路（workspace→network→policy→container→cleanup）；安全回归 7/7 PASS（commit df01b23）。
 
 ---
 
 ### Phase 3 — OpenCode HTTP Server Adapter（含 oh-my agent 路由，Phase 3/4 合并）
 
-- [x] 容器入口脚本：读取 env（API keys、server password、permission template、mode）→ 生成 `~/.config/opencode/opencode.json` 与 auth 文件 → 启动 `opencode serve --port ... --hostname 127.0.0.1`。（oh-my-openagent 插件已装在镜像内，`opencode serve` 启动后自动加载，Prometheus/Sisyphus 通过 `prompt_async` 的 `agent` 参数路由）
-- [x] Adapter 通过 docker network 调用容器内 opencode HTTP（`src/worker/adapters/opencode/client.py`）：
-  - `/global/health` 启动探测（已在 Phase 2 sandbox/manager.py 实现）。
-  - `/global/event` SSE 订阅（`client.stream_events()`，自有行号 cursor 包装）。
-  - `/session` 创建（`client.create_session()`）。
-  - `POST /session/:id/message` 投递 `noReply:true` 消息注入历史上下文（`client.send_message()`）。
-  - `POST /session/:id/prompt_async` 投递异步 prompt；成功返回 `204`，结果从 SSE 读取（`client.prompt_async()`）。
-  - `POST /session/:id/permissions/:permissionID` 映射 worker Decision；`permissionID` 以 `per` 开头，response 取值为 `once|always|reject`（`client.respond_permission()`）。
-  - `GET /session/:id/diff` 收集 diff artifact（`client.get_diff()`）。
-  - `GET /session/:id/message` 收集 transcript artifact（`client.get_messages()`）。
-  - `POST /session/:id/abort` + 容器 stop 双层中止（`client.abort_session()`）。
-- [x] 事件归一化：opencode event kind ↔ TaskEvent kind 映射表（`src/worker/adapters/opencode/event_stream.py`）：
-  - `message.part.delta` → `assistant_delta`（文本流）
-  - `message.part.updated` (tool-use) → `tool_call_started`
-  - `message.part.updated` (tool-result) → `tool_call_finished`
-  - `session.idle` / `session.status:idle` → 任务完成信号（driver 内部检测）
-  - `session.diff` → diff 缓存（driver 内部）
-  - permission 字段 → `hitl_required` + `DecisionRequest`
-- [x] Permission template 默认值（`orchestrator._build_permission_json` 已实现）：
-  - `plan_first_default`：edit ask、bash ask、webfetch ask、external_directory deny。
-  - `direct_execute_default`：edit allow、bash ask、webfetch ask、external_directory deny。
-- [x] `plan_first` 流程：`prompt_async` + `{agent:"Prometheus"}` → 等待 LLM 生成计划 → `plan_ready` 事件 → HITL 审批 → 批准后切换 Sisyphus 继续执行（`driver._handle_plan_approval`）。
-- [x] `direct_execute` 流程：`prompt_async` + `{agent:"Sisyphus"}` 直接进入 executing 阶段。
-- [x] `_drive_opencode` stub 替换为 `OpenCodeDriver.run()`（`src/worker/orchestrator/orchestrator.py`）。
-- [x] HITL 权限处理：tool_permission DecisionRequest → 轮询 DB → respond_permission（`driver._handle_permission`）。
-- [x] Artifact 收集：diff JSON + transcript JSON 写磁盘、注册 DB、发 `artifact_ready` 事件。
-- [ ] API discovery fixture（非阻塞）：pin 版本实测 endpoint 行为记录。
-- [ ] `mode_escalation_suggested` 事件（Phase 5 前可选）：direct_execute 中 permission 频繁触发 ask 时建议切换 plan_first。
+> **状态：✅ 已归档（commit e32c5e5，2026-05-14；E2E 天齐锂业分析跑通）**
+>
+> **Review 警示（见 [code-review-2026-05-14.md](../code-review-2026-05-14.md)）**：
+> - `[REVIEW: P0-5]` agent 名误用为 `"plan"` / `"build"`（opencode 内置）而非 `"Prometheus"` / `"Sisyphus"`（oh-my）；与 ADR-001 / ADR-006 不一致。E2E 表面跑通但 agent 路由路径与 ADR 不符。
+> - `[REVIEW: P0-6]` `task_timed_out` 事件类型缺失，超时被错误转为 `task_failed`。
+> - `[REVIEW: P0-7]` HITL abort 路径错误地写入 `task_failed` 而非 `task_aborted`。
+> - `[REVIEW: P1-15]` `respond_permission="reject"` 在 opencode 中是单次拒绝，driver 没有 reject 计数上限，极端场景可能死循环到任务超时。
 
----
+**主要交付**：`adapters/opencode/client.py`（health/SSE/session/message/prompt_async/permission/diff/abort 全链路）；`event_stream.py` opencode↔TaskEvent 映射；`plan_first`（Prometheus）与 `direct_execute`（Sisyphus）双模式；`_handle_plan_approval` + `_handle_permission` HITL 路径；artifact 收集（diff + transcript）；E2E 天齐锂业分析跑通（commit e32c5e5）。
 
-### Phase 4 — ~~oh-my-opencode Mode Adapter~~ → 合并入 Phase 3
-
-> ADR-001 决定：oh-my-openagent 以插件形式运行，Phase 3 的 HTTP adapter 已覆盖所有 oh-my 能力。原 Phase 4 独立 adapter 计划取消；以下条目并入 Phase 3 执行：
-
-- [x] 镜像内安装 oh-my-openagent（3.17.2 pin，Spike 3 已验证，ADR-002 记录）。
-- [x] Version policy：pin oh-my 3.17.2；Spike 3 确认容器内可用。
-- [x] `plan_first` 流程：`prompt_async` + `{agent:"Prometheus"}`（已实现）。
-- [x] `direct_execute` 流程：`prompt_async` + `{agent:"Sisyphus"}`（已实现）。
-- [ ] `/start-work` slash command 集成验证（可选，非 MVP 阻塞）。
-- [ ] oh-my doctor 容器内通过验证（Phase 5 端到端时确认）。
-- [ ] `mode_escalation_suggested` 事件 schema 稳定（Phase 5）。
-
-Phase 3（合并后）退出检查：
-- [x] `OpenCodeClient` + `event_stream` + `OpenCodeDriver` 三层 adapter 实现完成。
-- [x] `orchestrator._drive_opencode` 已替换为真实 HTTP adapter（非 stub）。
-- [x] `repo.get_resolved_decision` 已添加，HITL 轮询可用。
-- [ ] 两种 mode 在真实 LLM 上各跑通 1 个端到端用例（集成测试，Phase 5 前完成）。
-- [ ] `mode_escalation_suggested` 事件具备稳定 schema，可被上游消费（Phase 5）。
+> ⚠️ Phase 4（oh-my Mode Adapter）已由 ADR-001 合并入 Phase 3，不再单独存在。
 
 ---
 
 ### Phase 5 — HITL 最小闭环 + 事件可靠性
 
-- [x] 统一 DecisionRequest：plan approval / tool permission / file write / broker egress / long-task continue。
-- [x] HITL 超时：`default_on_timeout = abort`；超时事件 `hitl_timeout`（TaskEventKind.hitl_timeout）+ `expire_decision` DB 标记 + 触发 `/session/:id/abort` + 容器 stop。
-- [x] Event cursor & replay：上游 SSE 断线重连后能从 `Last-Event-ID` 续传，确保 decision 窗口不丢失（routes.py 已实现历史补发）。
-- [x] Decision 幂等：重复 `decision_id` 返回上次结果（resolve_decision INSERT OR IGNORE）。
-- [x] 任务恢复策略（受 MVP 限制）：
-  - 终态任务可重连查事件、下 artifact。
-  - 进行中任务在 worker 重启后标 `failed(orphaned)`（reap_orphaned_containers，main.py startup）。
-- [x] `mode_escalation_suggested` 事件：direct_execute 模式权限请求 ≥ 3 次时自动发出建议事件。
+> **状态：✅ 已归档（commit fbaa13b，2026-05-14）**
+>
+> **Review 警示（见 [code-review-2026-05-14.md](../code-review-2026-05-14.md)）**：
+> - `[REVIEW: P1-13]` `HitlPolicy.on_timeout="continue"` / `"escalate"` 路径未实现，仅识别 `"abort"`；schema 定义与实际行为不一致。
+> - `[REVIEW: P1-14]` `HitlPolicy.auto_approve` 字段未实现，driver 完全不查；配置生效与否对用户为黑盒。
+> - `[REVIEW: P1-10]` `_next_event_id` 在并发写入下存在 UNIQUE 冲突 race；driver 的 `_consume_sse` 与 `_handle_permission` 并发场景下会触发。
+
+**主要交付**：统一 DecisionRequest（plan approval/tool permission/file write/broker egress/long-task continue）；HITL 超时 `default_on_timeout=abort`（`hitl_timeout` 事件 + `expire_decision` DB + abort + 容器 stop）；SSE `Last-Event-ID` 断线续传；Decision 幂等；`mode_escalation_suggested`（权限请求 ≥3 次触发）；重启后孤儿任务标 `failed(orphaned)`（commit fbaa13b）。
 
 ---
 
 ### Phase 6 — Worker Hardening
+
+> **状态：🟡 部分完成，待收尾**
+>
+> **Review 警示（见 [code-review-2026-05-14.md](../code-review-2026-05-14.md)）**：
+> - `[REVIEW: P1-11]` Metrics helper（`inc_task_count` / `observe_task_duration` 等）全仓 0 个 callsite，`/metrics` 端点格式正确但永远空。Phase 6 退出检查的"counter 接入"实质未达成。
+> - `[REVIEW: P1-9]` SQLite WAL 模式注释/路线图均承诺已启用，但 `init_db` 实际未执行 `PRAGMA journal_mode=WAL`。
+> - `[REVIEW: P1-12]` SSE 实时推送是 0.5s polling 而非事件驱动；MVP 可接受但属于已知性能瓶颈。
+> - 集成测试（HITL 时序、安全回归脚本化）仍 pending；现仅有 `tests/fixtures/stub_opencode_server.py` 但未串到 integration 用例。
 
 - [x] 测试矩阵：
   - [x] 单元：state machine（test_state_machine.py）、event mapper（test_event_stream.py 41 用例）、permission mapper（test_permission_mapper.py）。
@@ -549,24 +335,25 @@ Phase 3（合并后）退出检查：
 
 Phase 6 退出检查：
 - [x] 单元测试 41/41 通过（pytest tests/unit/）。
-- [x] Prometheus /metrics 端点以 text/plain; version=0.0.4 格式响应。
+- [x] Prometheus /metrics 端点**格式**以 text/plain; version=0.0.4 响应。
+- [ ] **Metrics counter 接入** — `[REVIEW: P1-11]` helper 已定义但全仓 0 callsite，待 Sprint 1 修复。
 - [x] 结构化日志 correlation filter 通过语法检查 + 模块导入验证。
-- [ ] 集成测试（HITL 时序、安全回归）需真实 Docker 环境，标记为 pending。
+- [ ] 集成测试（HITL 时序、安全回归脚本化）需真实 Docker 环境，标记为 pending。
+- [ ] WAL 模式启用 — `[REVIEW: P1-9]` 注释承诺已启用，实际未执行 PRAGMA。
 
 ---
 
 ### Phase 7 — 生产化 todo（仅占位）
 
+- **Broker 完整交付**（P0-1/P0-2/P0-3）：CONNECT 隧道、`internal=True` 网络隔离、lifespan 启动 broker 进程。
 - 多用户/多租户：认证、RBAC、租户配额、secret manager（Vault/KMS）。
 - 强审计：hash chain、对象存储归档、查询 API、保留策略。
 - 扩展性：Redis queue、多 worker、PostgreSQL state store、S3 artifact、K8s sandbox。
 - 安全增强：egress proxy 细粒度白名单、MCP policy engine、seccomp/AppArmor、镜像签名（cosign）、SAST/DAST、SBOM/CVE。
 - 上游生态：SDK、OpenAPI 发布、stdio JSON-RPC bridge、订阅态凭据代理方案。
-- 任务恢复：进行中任务跨 worker 重启续跑。
+- 任务恢复：进行中任务跨 worker 重启续跑 / 零密钥 Broker 代理 LLM 请求。
 - 业务集成模板：vibe-trading MCP/skills 接入指南（仍在上游交付）。
-- 零密钥方案：Broker 作为 OpenAI-compatible endpoint 代理所有 LLM 请求。
-- HTTP/SSE MCP 支持：当上游需要非本地 MCP 时再扩展 broker。
-- Safe-explore 只读模式 / auto_recommend 模式 / 跨重启任务续跑 / 静态加密 / 镜像 cosign 签名。
+- Safe-explore 只读模式 / auto_recommend 模式 / 静态加密 / 镜像 cosign 签名。
 
 ---
 
@@ -605,29 +392,56 @@ Phase 6 退出检查：
 
 ---
 
-## 8. 下一步执行顺序
+## 8. Sprint Backlog（来源：code-review-2026-05-14.md）
 
-### 8.1 立即执行（Phase 0 收口）
+> 完整 review 原文见 [`docs/code-review-2026-05-14.md`](../code-review-2026-05-14.md)。
+> 各条目格式：`[P<优先级>-<序号>] 问题描述 → 修复方向`
 
-1. ✅ `ADR-001` 已输出（见 `docs/adr/ADR-001-opencode-adapter-mode.md`）：HTTP Server 唯一主路径；oh-my-openagent 以插件形式加载；Prometheus/Sisyphus 通过 `prompt_async` 的 `agent` 参数路由；CLI+tmux 与 oh-my run 黑盒均关闭；Phase 3/4 合并；H12 收口。
-2. 把 endpoint spike 固化为 fixture：保存 message / prompt_async / diff / abort / permissions 的请求与响应样例，并在 adapter 测试中复用。
-3. ✅ runtime 配置 spike 完成（Spike 1b）：`OPENCODE_DISABLE_AUTOUPDATE=1`、`OPENCODE_CONFIG_CONTENT` 内联注入（含 `{env:X}` 替换）、`OPENCODE_PERMISSION` 注入；ADR-002 H10 已回填；ADR-003 升级为纯 env 注入方案；证据见 §1.3。
-4. 真实 permission HITL spike：通过 ask policy 触发真实 `per_*` request，确认 SSE 事件 payload，映射到 Worker `DecisionRequest`；推迟到 Phase 3 集成测试（知道 endpoint schema，不阻塞 Phase 1）。
-5. 做 `/start-work` slash command spike：确认它在 `opencode serve` 会话内的事件形态，判断是否适合作为 `plan_first` 主入口；若不稳定，MVP 使用 `prompt_async + agent:Prometheus`。
-6. 做真实但安全的 ultrawork 只读用例：使用临时 workspace，让 Sisyphus 读取一个小型 fixture 并产出报告，不允许 edit/bash，以验证事件、artifact、超时和残留进程清理。
-7. ✅ `ADR-006` 已输出（见 `docs/adr/ADR-006-ohmy-version-and-entry.md`）：oh-my-openagent 3.17.2 pin；H11 收口。
+### Sprint 0 — 正确性修复（阻塞合并）
 
-### 8.2 下一批工程任务
+| ID | 问题 | 修复方向 |
+|---|---|---|
+| P0-5 | agent 名误用 `"plan"`/`"build"`，与 ADR 不符 | 改为 `"Prometheus"`/`"Sisyphus"` |
+| P0-6 | `task_timed_out` 事件类型缺失，超时错转 `task_failed` | 补充 `task_timed_out` TaskEventKind + driver 分支 |
+| P0-7 | HITL abort 路径写 `task_failed` 而非 `task_aborted` | abort 路径改写正确终态事件 |
+| P0-4 | `local` workspace 模式以 root + 关只读 FS 启动 | 强制 uid 1000 + `--read-only` |
+| P0-8 | artifact 路径未校验，存在路径穿越风险 | 下载前 resolve + prefix 校验 |
+| P0-1/P0-3 | Broker CONNECT 隧道占位 + lifespan 未启动 broker | 推迟 Phase 7，在此记录已知缺陷 |
 
-1. 初始化 Python/FastAPI 项目骨架、pyproject、基础测试框架。
-2. 先实现 contract schemas：TaskRequest / TaskEvent / Decision / Artifact / Error。
-3. 实现 stub opencode server fixture，用于不依赖真实 LLM 的 adapter 单元/集成测试。
-4. 实现 OpenCode HTTP adapter 的 health/session/event 基线，再补 permission/diff/abort。
-5. 开始 Dockerfile spike：debian-slim + pinned opencode + pinned oh-my-opencode + 非 root 用户。
+### Sprint 1 — 可靠性与完整性
 
-### 8.3 下一个 HITL 回顾点
+| ID | 问题 | 修复方向 |
+|---|---|---|
+| P1-9 | SQLite WAL pragma 承诺未执行 | `init_db` 加 `PRAGMA journal_mode=WAL` |
+| P1-10 | `_next_event_id` 并发 UNIQUE 冲突 race | 改用 DB `MAX(id)+1` 或序列化写入 |
+| P1-11 | metrics helper 全仓 0 callsite，`/metrics` 永远空 | orchestrator/routes 关键路径接入 counter |
+| P1-12 | SSE 实时推送是 0.5s polling 而非事件驱动 | asyncio.Event 替换 sleep 轮询 |
+| P1-13 | `on_timeout="continue"`/`"escalate"` 路径未实现 | driver 补充 continue/escalate 分支 |
+| P1-14 | `auto_approve` 字段 driver 完全不查 | driver 读取字段，自动通过低风险决策 |
+| P1-15 | `reject` 无计数上限，极端场景死循环 | driver 加 reject 计数器 + 上限中止 |
+| P1-16 | 状态机无效转换未拒绝 | `transition()` 加合法前置状态校验 |
+| P1-17 | `task_queued` 在 queue 满时未发出 | queue 满路径补发 `task_queued` 事件 |
+| P1-18 | workspace 临时目录缺失清理 | orchestrator cleanup 路径覆盖临时 workspace |
+| P1-19 | artifact GC 策略无实现 | 终态任务 TTL 到期后删文件 + DB 标记 |
 
-Phase 0 收口后只需要人工确认两件事：
+### Sprint 2 — 代码质量
 
-1. ~~oh-my 版本 pin~~：已在 ADR-006 收口，pin `oh-my-openagent 3.17.2`；升级到 4.1.1 推迟到 Spike 3 容器验证后。
-2. `plan_first` 主入口：`prompt_async` + `agent:"Prometheus"` 已选定为 MVP 主路径；`/start-work` slash command 作为 Phase 3 可选优化。
+| ID | 问题 | 修复方向 |
+|---|---|---|
+| P2-21 | 顶层 lazy import 影响启动性能 | 将重型 import 移到函数内或启动 hook |
+| P2-22 | `asyncio.get_event_loop()` 已废弃 | 替换为 `asyncio.get_running_loop()` |
+| P2-23 | except 块吞异常不重抛 | 关键路径 except 加 `raise` 或 `logger.exception` |
+| P2-24 | provider key 映射硬编码字符串 | 改用 enum / constants 避免拼写错误 |
+| P2-25 | 模块 import 有副作用（DB 初始化） | 将副作用移入显式 `init()` 调用 |
+| P2-26 | 死代码（已注释的旧 stub 函数） | 删除旧 stub |
+| P2-27 | 未使用的常量/字段 | 清理 |
+| P2-28 | silent error（swallowed exception 无日志） | 补 log + 考虑 Sentry/alerting hook |
+
+### 测试覆盖缺口
+
+| 范围 | 现状 | 目标 |
+|---|---|---|
+| Orchestrator 集成（HITL 时序） | 无 | stub server 驱动的决策早到/晚到/超时场景 |
+| 安全回归脚本化 | 手工 | pytest + Docker fixture 自动运行 |
+| Contract JSON Schema 校验 | 无 | 上游 TaskRequest/Event 通过 JSON Schema 严格校验 |
+| abort/timeout 终态事件 | 无 | P0-6/P0-7 修复后补充端到端用例 |
