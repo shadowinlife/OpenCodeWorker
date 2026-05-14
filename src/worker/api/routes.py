@@ -414,3 +414,22 @@ async def download_artifact(task_id: str, artifact_id: str):
         filename=resolved.name,
         media_type="application/octet-stream",
     )
+
+
+# ---------------------------------------------------------------------------
+# 可观测性：Prometheus metrics
+# ---------------------------------------------------------------------------
+
+@router.get("/metrics", tags=["probe"])
+async def metrics():
+    """Prometheus text format 0.0.4 metrics 端点。
+
+    供 Prometheus scraper 或人工查看。
+    返回 Content-Type: text/plain; version=0.0.4; charset=utf-8。
+    """
+    from fastapi.responses import PlainTextResponse
+    from worker.observability.metrics import render_prometheus
+    return PlainTextResponse(
+        content=render_prometheus(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )

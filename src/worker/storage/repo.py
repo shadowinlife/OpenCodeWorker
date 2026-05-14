@@ -314,6 +314,26 @@ async def get_resolved_decision(
     )
 
 
+async def expire_decision(
+    db: aiosqlite.Connection,
+    decision_id: str,
+) -> bool:
+    """将超时的 pending 决策标记为 timed_out。
+
+    由 driver._wait_for_decision 在超时后调用，防止 pending 决策永久悬挂。
+    只更新 status='pending' 的行（幂等：已 resolved/timed_out 不重复更新）。
+    Returns True 若成功更新，False 若已非 pending。
+    """
+    now = time.time()
+    cur = await db.execute(
+        "UPDATE decisions SET status = 'timed_out', resolved_at = ? "
+        "WHERE id = ? AND status = 'pending'",
+        (now, decision_id),
+    )
+    await db.commit()
+    return cur.rowcount > 0
+
+
 # ---------------------------------------------------------------------------
 # Artifacts
 # ---------------------------------------------------------------------------

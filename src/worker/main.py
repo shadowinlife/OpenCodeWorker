@@ -52,6 +52,10 @@ async def lifespan(app: FastAPI):
     # ------------------------------------------------------------------ #
     settings = get_settings()
 
+    # 结构化日志配置（correlation filter + 可选 JSON 格式）
+    from worker.observability.logging import configure_logging
+    configure_logging(level=settings.log_level, json_logs=False)
+
     # 确保数据目录存在（db_path 父目录 + artifacts 目录）
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)
     settings.artifacts_dir.mkdir(parents=True, exist_ok=True)

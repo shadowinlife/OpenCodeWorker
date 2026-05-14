@@ -43,6 +43,7 @@ from worker.contract.decision import DecisionChoice, DecisionKind, DecisionReque
 from worker.contract.event import TaskEventKind
 from worker.contract.task import TaskMode, TaskRequest, TaskStatus
 from worker.storage.repo import (
+    expire_decision,
     get_resolved_decision,
     insert_artifact,
     insert_decision,
@@ -108,6 +109,9 @@ class OpenCodeDriver:
         超时时抛出 RuntimeError；内部任何未处理异常直接向上冒泡，
         由 orchestrator 的 except 块写入 task_failed 事件。
         """
+        from worker.observability.logging import set_correlation, clear_correlation
+        set_correlation(task_id=self.task_id)
+
         client = OpenCodeClient(
             host="127.0.0.1",
             port=self.host_port,
@@ -126,11 +130,13 @@ class OpenCodeDriver:
             if self.session_id:
                 await client.delete_session(self.session_id)
             await client.aclose()
+            clear_correlation()
 
     # ── 内部主流程 ─────────────────────────────────────────────────────────────
 
     async def _run_inner(self) -> None:
         """核心驱动流程（已在 asyncio.timeout 包装内）。"""
+        from worker.observability.logging import set_correlation
         client = self.client
 
         # Step 1: 创建 opencode session
@@ -141,6 +147,7 @@ class OpenCodeDriver:
                 f"opencode create_session returned no id: {session_data!r}"
             )
         self.session_id = session_id
+        set_correlation(session_id=session_id)
         await update_task_status(
             self.db, self.task_id, TaskStatus.starting_opencode,
             opencode_session_id=session_id,
@@ -227,6 +234,9 @@ class OpenCodeDriver:
             5. assistant_delta / tool_call_* → 写入 DB 事件
         """
         _pending_perm_ids: set[str] = set()  # 防止同一 permission_id 重复处理
+        # direct_execute 模式：权限请求频率计数（达到阈值时发 mode_escalation_suggested）
+        _perm_ask_count = 0
+        _MODE_ESCALATION_THRESHOLD = 3
 
         try:
             async for raw_event in self.client.stream_events():
@@ -249,10 +259,25 @@ class OpenCodeDriver:
                     pid = perm_req["permission_id"]
                     if pid not in _pending_perm_ids:
                         _pending_perm_ids.add(pid)
+                        _perm_ask_count += 1
                         asyncio.create_task(
                             self._handle_permission(session_id, perm_req),
                             name=f"perm-{self.task_id[:8]}-{pid}",
                         )
+                        # direct_execute 模式：频繁 ask 时发 mode_escalation_suggested
+                        if (
+                            self.request.mode == TaskMode.direct_execute
+                            and _perm_ask_count == _MODE_ESCALATION_THRESHOLD
+                        ):
+                            await insert_event(
+                                self.db, self.task_id,
+                                TaskEventKind.mode_escalation_suggested,
+                                {
+                                    "reason": "repeated_permission_asks",
+                                    "ask_count": _perm_ask_count,
+                                    "suggestion": "Consider resubmitting with mode=plan_first",
+                                },
+                            )
                     continue
 
                 # 归一化并写入 Worker 事件
@@ -359,8 +384,18 @@ class OpenCodeDriver:
             else:
                 opencode_response = "reject"
         else:
-            # 超时：按策略处理
+            # 超时：标记 DB decision 为 timed_out，发 hitl_timeout 事件，按策略处理
+            await expire_decision(self.db, decision_id)
             on_timeout = hitl_policy.on_timeout if hitl_policy else "abort"
+            await insert_event(
+                self.db, self.task_id, TaskEventKind.hitl_timeout,
+                {
+                    "decision_id": decision_id,
+                    "kind": DecisionKind.tool_permission.value,
+                    "permission_id": permission_id,
+                    "on_timeout": on_timeout,
+                },
+            )
             if on_timeout == "abort":
                 self._abort_event.set()
             logger.warning(
@@ -446,8 +481,17 @@ class OpenCodeDriver:
         if resolved is not None and resolved.response is not None:
             choice_val = resolved.response.choice.value
         else:
-            # 超时
+            # 超时：标记 DB decision 为 timed_out，发 hitl_timeout 事件
+            await expire_decision(self.db, decision_id)
             choice_val = (hitl_policy.on_timeout if hitl_policy else "abort")
+            await insert_event(
+                self.db, self.task_id, TaskEventKind.hitl_timeout,
+                {
+                    "decision_id": decision_id,
+                    "kind": DecisionKind.plan_approval.value,
+                    "on_timeout": choice_val,
+                },
+            )
 
         await insert_event(
             self.db, self.task_id, TaskEventKind.decision_received,

@@ -76,6 +76,7 @@ class TaskEventKind(str, Enum):
     tool_call_finished = "tool_call_finished"
     plan_ready = "plan_ready"
     hitl_required = "hitl_required"
+    hitl_timeout = "hitl_timeout"
     decision_received = "decision_received"
     execution_started = "execution_started"
     artifact_ready = "artifact_ready"
