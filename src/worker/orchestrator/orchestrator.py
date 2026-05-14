@@ -177,7 +177,7 @@ async def run_task(task_id: str) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Phase 2 stub：opencode 驱动占位
+# Phase 3：opencode HTTP adapter 驱动
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def _drive_opencode(
@@ -187,58 +187,29 @@ async def _drive_opencode(
     host_port: int,
     container_env: dict[str, str],
 ) -> None:
-    """驱动容器内 opencode 执行任务（Phase 2 stub）。
+    """驱动容器内 opencode 执行任务（Phase 3 实现）。
 
-    Phase 2：等待容器自然退出（opencode 完成后容器会退出）。
-    Phase 3：替换为真实的 opencode HTTP adapter 实现：
+    创建 OpenCodeDriver 实例并委托其完整生命周期：
         - SSE 订阅 /global/event
-        - 创建/复用 session
-        - 投递 prompt_async（带 agent 路由）
-        - 处理 permission events → HITL
-        - 收集 artifacts（/session/:id/diff）
+        - session 创建 + prompt_async（按 mode 路由 agent）
+        - 权限 HITL（tool_permission DecisionRequest）
+        - plan_first HITL 审批
+        - artifact 收集（diff + transcript）
+
+    超时或 abort 时抛出 RuntimeError，由 queue._run_one 写入 task_failed 事件。
     """
-    import asyncio
+    from worker.adapters.opencode.driver import OpenCodeDriver
+    from worker.storage.db import get_db
 
     db = await get_db()
-    logger.info(
-        "task %s: waiting for container to exit (Phase 2 stub, port=%d)",
-        task_id, host_port
+    driver = OpenCodeDriver(
+        task_id=task_id,
+        request=request,
+        host_port=host_port,
+        container_env=container_env,
+        db=db,
     )
-
-    # 确定超时时间
-    timeout_sec = 1800
-    if request.resource_limits and request.resource_limits.timeout_sec:
-        timeout_sec = request.resource_limits.timeout_sec
-
-    # 轮询容器状态（每 2 秒检查一次），直到容器退出或超时
-    start = asyncio.get_event_loop().time()
-    while True:
-        c = await get_container(task_id)
-        if c is None:
-            # 容器被外部删除
-            logger.warning("task %s: container disappeared", task_id)
-            break
-
-        c.reload()
-        status = c.status
-        if status in ("exited", "dead"):
-            exit_code = c.attrs["State"]["ExitCode"]
-            logger.info(
-                "task %s: container exited with code %d", task_id, exit_code
-            )
-            if exit_code != 0:
-                raise RuntimeError(
-                    f"container exited with non-zero code {exit_code}"
-                )
-            break
-
-        elapsed = asyncio.get_event_loop().time() - start
-        if elapsed > timeout_sec:
-            logger.warning("task %s: timeout after %ds, stopping container", task_id, timeout_sec)
-            await stop_container(task_id)
-            raise RuntimeError(f"task timed out after {timeout_sec}s")
-
-        await asyncio.sleep(2.0)
+    await driver.run()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

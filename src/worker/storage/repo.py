@@ -282,6 +282,38 @@ async def get_pending_decision(
     )
 
 
+async def get_resolved_decision(
+    db: aiosqlite.Connection,
+    decision_id: str,
+) -> Optional[PendingDecision]:
+    """按 decision_id 查询已解析（status='resolved'）的决策记录。
+
+    由 Orchestrator HITL 等待循环调用，轮询直到决策被外部系统通过
+    POST /tasks/:id/decisions 提交并 resolve。
+    """
+    from worker.contract.decision import DecisionResponse as DR
+    async with db.execute(
+        "SELECT id, task_id, kind, request_json, response_json, status, "
+        "created_at, resolved_at FROM decisions WHERE id = ? AND status = 'resolved'",
+        (decision_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    req = DecisionRequest.model_validate_json(row["request_json"])
+    resp = DR.model_validate_json(row["response_json"]) if row["response_json"] else None
+    return PendingDecision(
+        decision_id=row["id"],
+        task_id=row["task_id"],
+        kind=req.kind,
+        status=row["status"],
+        request=req,
+        response=resp,
+        created_at=row["created_at"],
+        resolved_at=row["resolved_at"],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Artifacts
 # ---------------------------------------------------------------------------
