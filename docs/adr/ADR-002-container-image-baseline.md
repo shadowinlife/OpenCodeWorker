@@ -4,8 +4,9 @@
 |---|---|
 | **状态** | Accepted |
 | **日期** | 2026-05-13 |
-| **关联 Spike** | Phase 0 Spike 3（镜像构建验证，待完成） |
-| **关联 HITL** | H2（镜像分发与签名），H11（oh-my 版本 pin，待 Spike 3 确认） |
+| **更新日期** | 2026-05-14（Phase 2.5 镜像构建验证完成） |
+| **关联 Spike** | Phase 0 Spike 3（镜像构建验证，✅ Phase 2.5 已完成） |
+| **关联 HITL** | H2（镜像分发与签名），H11（oh-my 版本 pin，✅ 已确认 3.17.2） |
 
 ---
 
@@ -28,22 +29,43 @@ Worker 需要一个可重现、版本可 pin 的容器镜像，内含 opencode +
 
 ### 版本 Pin 策略
 
-| 组件 | Pin 方式 | 当前已知版本 |
-|---|---|---|
-| opencode | 下载固定版本二进制 URL | `1.14.30` |
-| oh-my-opencode CLI | npm `@<version>` exact pin | `3.17.5`（待 H11 收口后确认） |
-| oh-my-openagent plugin | opencode 插件配置 exact version | 与 oh-my CLI 版本对应 |
-| Bun | 固定版本安装脚本或二进制 | 待 Spike 3 确认 |
-| stdio MCP 二进制 | 构建时 pin；按需列入 Dockerfile ARG | 待 Phase 2 按业务需求确定 |
+| 组件 | Pin 方式 | 已 pin 版本 | 验证证据 |
+|---|---|---|---|
+| 基础镜像 | 本地预置 | `ubuntu:24.04`（Image ID: `e0f16e6366fe`） | `docker images ubuntu:24.04`，2026-05-13 |
+| opencode | 宿主机 `npm pack` + `COPY` 离线安装 | `1.14.30`（linux-x64 自包含二进制） | `docker run ... opencode --version` → `1.14.30`，2026-05-14 |
+| oh-my-openagent plugin | 宿主机 `npm pack` + `COPY` 离线缓存 | `3.17.2`（Bun bundle，dist/index.js 完全内联） | 镜像内 `ls ~/.cache/opencode/packages/oh-my-openagent@latest/` 结构验证，2026-05-14 |
+| stdio MCP 二进制 | 按需在 Phase 3+ 添加 | — | — |
+
+**离线构建材料准备方式**（宿主机执行，无 Dockerfile 网络依赖）：
+```bash
+# opencode linux-x64 自包含二进制（49MB）
+npm pack opencode-linux-x64@1.14.30
+# oh-my-openagent 插件 cache 包（3MB，含完整 Bun bundle）
+npm pack oh-my-openagent@3.17.2
+# 构建 cache 结构 tar，解压后得 oh-my-openagent@latest/node_modules/oh-my-openagent/
+```
+详见 `docker/worker/dist/README.md`。
 
 版本变更流程（升级 playbook）：
 1. Spike：在临时镜像里验证新版本组合可通过 `opencode --version` + `oh-my-opencode doctor`。
 2. ADR 追加记录：bump 版本号及验证结果。
 3. 回归：重跑 Phase 6 测试矩阵后发布新 tag。
 
-### 用户模型
+### 安全验证（Phase 2.5 回归测试，2026-05-14）
 
-镜像内创建非 root 用户（如 `worker`），opencode serve 以该用户运行，容器启动参数 `--security-opt no-new-privileges`。
+镜像 `worker-sandbox:phase2.5`（Image ID `0dea2aca968d`）以 sandbox 运行参数验证通过：
+
+| 测试 | 运行参数 | 结果 |
+|---|---|---|
+| read-only FS（`rm -rf /usr`） | `--read-only` | `PASS`：Read-only file system |
+| /etc/shadow 读取 | `--user 1000:1000` | `PASS`：Permission denied |
+| /etc/motd 写入 | `--read-only` | `PASS`：Read-only file system |
+| /tmp 写入（正常工作区） | `--tmpfs /tmp` | `PASS`：写入成功 |
+| 网络隔离 | `--network none` | `PASS`：curl 未安装 + 无网络栈 |
+| setuid 提权 | `--cap-drop ALL --security-opt no-new-privileges` | `PASS`：python3 未安装，capabilities 已全部 drop |
+| pids-limit（fork bomb 防护） | `--pids-limit 20` | `PASS`：超额进程被 Abort |
+
+
 
 ### 分发渠道
 

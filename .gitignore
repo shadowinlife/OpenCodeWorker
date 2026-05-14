@@ -7,6 +7,11 @@ __pycache__/
 *.egg
 *.egg-info/
 dist/
+# Un-ignore docker build materials (README tracked; binary artifacts excluded below)
+!docker/worker/dist/
+!docker/worker/dist/README.md
+docker/worker/dist/*.tgz
+docker/worker/dist/*.tar.gz
 build/
 eggs/
 parts/

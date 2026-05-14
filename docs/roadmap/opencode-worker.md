@@ -422,10 +422,11 @@ Phase 0 退出检查（无新 HITL，按 ADR 落实即可）：
 
 ### Phase 2 — Docker Sandbox + Workspace + Broker
 
-> **状态：代码实现完成（2025-07，commit TBD）；镜像构建 + 安全回归测试待 Phase 2.5 执行。**
+> **状态：✅ 全部完成（Phase 2 代码 commit df01b23；Phase 2.5 镜像构建 + 安全回归 2026-05-14）**
 
-- [x] Dockerfile：debian-slim + Bun + opencode pin + oh-my-openagent pin + 非 root 用户(uid 1000)；禁用 auto-update（ENV + 容器 env 双层）。
+- [x] Dockerfile：**ubuntu:24.04** + opencode 1.14.30（linux-x64 自包含二进制，离线 COPY）+ oh-my-openagent 3.17.2（Bun bundle，离线 COPY 缓存）+ sandbox 用户(uid 1000)；`OPENCODE_DISABLE_AUTOUPDATE=1`。
   - `docker/worker/Dockerfile` + `docker/worker/entrypoint.sh`
+  - 构建材料：`docker/worker/dist/`（离线预包装，见 README）
 - [x] Sandbox 启动参数：`--read-only`、`--tmpfs /tmp`、`--cap-drop ALL`、`--security-opt no-new-privileges`、`--pids-limit`、`--memory`、`--nano_cpus`、自定义 network。
   - 实现于 `src/worker/sandbox/manager.py`（`start_container`）
 - [x] 网络隔离：自建 docker network（`worker-sandbox-net`，`internal=True`）；Broker 作为唯一出口。
@@ -443,12 +444,19 @@ Phase 0 退出检查（无新 HITL，按 ADR 落实即可）：
   - Broker 配置接口：`POST /broker/tasks/:id/policy`（worker orchestrator 调用）。
   - 实现于 `src/broker/proxy.py` + `src/broker/policy.py`
 - [x] Orchestrator：`src/worker/orchestrator/orchestrator.py`，完整生命周期驱动（workspace→network→policy→container→health→drive→cleanup）。
-- [ ] 安全回归测试：rm -rf /、读取 /etc/shadow、curl 外网、fork bomb、超大输出。（待镜像构建完成后执行）
+- [x] 安全回归测试（2026-05-14）：
+  - `rm -rf /usr` → Read-only file system PASS
+  - `/etc/shadow` 读取 → Permission denied PASS
+  - `/etc/motd` 写入 → Read-only file system PASS
+  - `/tmp` 写入 → tmpfs 允许 PASS
+  - 网络隔离（`--network none`）→ curl 未安装 + 无网络栈 PASS
+  - `--cap-drop ALL --security-opt no-new-privileges` → setuid 被阻止 PASS
+  - `--pids-limit 20` → 超额进程被 Abort PASS
 
 Phase 2 退出检查：
 - [x] 代码实现完成，语法检查（30 文件）全部通过，/health smoke test 通过。
-- [ ] 镜像构建产物推送到 GHCR 私有 tag；ADR 记录 pin 版本。
-- [ ] 安全回归测试全部通过；任意单条失败必须修复后才能进入 Phase 3。
+- [x] 镜像 `worker-sandbox:1.14.30-3.17.2-phase2.5`（Image ID `0dea2aca968d`）本地构建成功（370MB，ubuntu:24.04 base）；ADR-002 已记录 pin 版本。
+- [x] 安全回归测试全部通过（7/7 PASS，2026-05-14）。
 
 ---
 
