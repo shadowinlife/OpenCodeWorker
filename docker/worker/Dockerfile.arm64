@@ -56,6 +56,16 @@ RUN mkdir -p /home/sandbox/.cache/opencode/packages && \
     cp -r /home/sandbox/.cache/opencode/packages/. /root/.cache/opencode/packages/ && \
     rm -f /tmp/ohmy-cache.tar.gz
 
+# 构建期断言：oh-my-openagent 包文件实际落盘成功
+# （COPY 静默成功但 tar 解压失败的场景下，运行时校验才会爆，这里前置到 build 阶段）
+# 与 entrypoint.sh 的运行时 GET /agent 校验配套，构成 build + runtime 双保险。
+RUN find /home/sandbox/.cache/opencode/packages -name package.json -path '*oh-my-openagent*' \
+        | grep -q . \
+        || (echo "FATAL: oh-my-openagent package.json missing after cache extraction" >&2 \
+            && ls -laR /home/sandbox/.cache/opencode/packages | head -40 >&2 \
+            && exit 1) \
+    && echo "build-time assertion OK: oh-my-openagent cache extracted"
+
 # ── 预置 @ai-sdk/openai-compatible 包 cache（架构无关 JS bundle）────────────
 COPY docker/worker/dist/ai-sdk-openai-compatible-cache.tar.gz /tmp/aisdk-cache.tar.gz
 RUN cd /home/sandbox/.cache/opencode/packages && \

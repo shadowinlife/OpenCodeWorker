@@ -53,10 +53,15 @@ from worker.storage.repo import (
 
 logger = logging.getLogger(__name__)
 
-# opencode 内置 agent 名称（oh-my-openagent 未加载时使用内置 agent）
-# "build" agent 拥有 bash/write/edit/webfetch 全量权限
-AGENT_PROMETHEUS = "plan"
-AGENT_SISYPHUS = "build"
+# Agent 路由对齐 ADR-001 / ADR-006 / oh-my-openagent 3.17.2：
+#   - plan_first    → "Prometheus" （规划 agent，read-only 工具集）
+#   - direct_exec   → "Sisyphus"   （执行 agent，bash/write/edit/webfetch 全开）
+#
+# 这两个 agent 名称的可用性由容器入口脚本（docker/worker/entrypoint.sh）在
+# opencode serve 启动后通过 GET /agent 验证：oh-my 未加载或 agent 缺失时
+# 容器启动失败（非零退出码），不会回退到 opencode 内置 "plan"/"build"。
+AGENT_PROMETHEUS = "Prometheus"
+AGENT_SISYPHUS = "Sisyphus"
 
 # HITL 决策轮询间隔（秒）
 _HITL_POLL_INTERVAL = 2.0

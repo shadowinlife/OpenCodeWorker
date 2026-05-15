@@ -44,11 +44,112 @@ mkdir -p "${CONFIG_DIR}"
 
 echo "[entrypoint] starting opencode serve on port ${PORT}"
 
-# 启动 opencode serve
-# - OPENCODE_CONFIG_CONTENT 和 OPENCODE_PERMISSION 已在 env 中，opencode 会自动读取
-# - --hostname 0.0.0.0 使 opencode 监听所有接口，Docker 端口映射（DNAT）才能正常转发
-#   注：Worker 通过 docker -p 将宿主端口映射到容器 4096，从容器外访问 127.0.0.1:<host_port>
-exec opencode serve \
+# ── 启动 opencode serve（后台），随后验证 oh-my-openagent 已加载 ──────────────
+# 设计：以前是 `exec opencode serve ...`，无法在启动后做任何检查。改为
+# 后台启动 + Python 健康检查 + GET /agent 校验 + wait，来执行 ADR-001/006
+# 要求的 Prometheus/Sisyphus 必备校验。
+#   - 校验失败 → kill opencode + 容器以非零退出码失败（NOT 静默回退到 plan/build）
+#   - 校验成功 → wait $OPENCODE_PID 阻塞，把 opencode 退出码作为容器退出码
+#
+# Worker 通过 docker -p 将宿主端口映射到容器 4096，从容器外访问 127.0.0.1:<host_port>
+opencode serve \
     --hostname "0.0.0.0" \
     --port "${PORT}" \
-    --print-logs
+    --print-logs &
+OPENCODE_PID=$!
+
+# 转发终止信号给 opencode，避免容器停止时遗留 zombie
+trap 'kill -TERM "${OPENCODE_PID}" 2>/dev/null || true' TERM INT
+
+# 健康检查 + agent 列表校验（python3 已在镜像中，无需额外 curl）
+# 临时关闭 errexit，让 python 非零退出码能被 $? 捕获而不是触发 trap EXIT
+set +e
+python3 - "${PORT}" <<'PY'
+import base64
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+port = sys.argv[1]
+password = os.environ["OPENCODE_SERVER_PASSWORD"]
+auth = base64.b64encode(f"opencode:{password}".encode()).decode()
+headers = {"Authorization": f"Basic {auth}"}
+
+def _get(path: str, timeout: float = 2.0) -> tuple[int, str]:
+    req = urllib.request.Request(f"http://localhost:{port}{path}", headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.status, resp.read().decode("utf-8", errors="replace")
+
+# 1) 等 opencode HTTP API 就绪（最长 30 秒）
+for attempt in range(1, 31):
+    try:
+        status, _ = _get("/global/health")
+        if status == 200:
+            print(f"[entrypoint] opencode healthy after {attempt}s", flush=True)
+            break
+    except (urllib.error.URLError, ConnectionError, OSError):
+        pass
+    time.sleep(1)
+else:
+    print("[entrypoint] FATAL: opencode failed /global/health within 30s", file=sys.stderr)
+    sys.exit(3)
+
+# 2) 校验 oh-my-openagent 已注册 Prometheus + Sisyphus
+try:
+    status, body = _get("/agent", timeout=5.0)
+except Exception as exc:
+    print(f"[entrypoint] FATAL: GET /agent failed: {exc}", file=sys.stderr)
+    sys.exit(4)
+
+print(f"[entrypoint] /agent status={status} body={body[:500]}", flush=True)
+
+required = ("Prometheus", "Sisyphus")
+# 同时支持 JSON 解析校验和子串兜底校验，以防 opencode /agent 响应 schema 变化。
+found_via_json: set[str] = set()
+try:
+    parsed = json.loads(body)
+    if isinstance(parsed, list):
+        items = parsed
+    elif isinstance(parsed, dict):
+        items = parsed.get("agents") or parsed.get("items") or []
+    else:
+        items = []
+    for item in items:
+        name = item.get("name") if isinstance(item, dict) else None
+        if name in required:
+            found_via_json.add(name)
+except (ValueError, TypeError):
+    pass
+
+missing = [name for name in required
+           if name not in found_via_json and f'"{name}"' not in body and name not in body]
+if missing:
+    print(
+        f"[entrypoint] FATAL: oh-my-openagent NOT loaded — missing required agents: {missing}",
+        file=sys.stderr,
+    )
+    print(
+        "[entrypoint] expected per ADR-001/006; check oh-my cache integrity in image "
+        "(docker/worker/Dockerfile.arm64) or oh-my-openagent loader logs above",
+        file=sys.stderr,
+    )
+    sys.exit(5)
+
+print(f"[entrypoint] verified oh-my-openagent agents loaded: {', '.join(required)}", flush=True)
+PY
+verify_rc=$?
+set -e
+
+if [ "${verify_rc}" -ne 0 ]; then
+    echo "[entrypoint] agent verification failed (rc=${verify_rc}); terminating opencode" >&2
+    kill -TERM "${OPENCODE_PID}" 2>/dev/null || true
+    wait "${OPENCODE_PID}" 2>/dev/null || true
+    exit "${verify_rc}"
+fi
+
+# 校验通过：把 opencode 退出码作为容器退出码
+wait "${OPENCODE_PID}"
+exit $?
