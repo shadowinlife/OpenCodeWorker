@@ -430,6 +430,7 @@ class OpenCodeDriver:
 
         hitl_policy = self.request.hitl_policy
         timeout_sec = hitl_policy.decision_timeout_sec if hitl_policy else 600
+        on_timeout_action, default_timeout_choice = self._resolve_hitl_timeout_policy()
 
         decision_id = str(uuid.uuid4())
         decision_req = DecisionRequest(
@@ -444,7 +445,7 @@ class OpenCodeDriver:
                 DecisionChoice.reject,
                 DecisionChoice.abort,
             ],
-            default_on_timeout=DecisionChoice.abort,
+            default_on_timeout=default_timeout_choice,
             expires_at=None,
             context={
                 "tool": tool,
@@ -483,21 +484,27 @@ class OpenCodeDriver:
         else:
             # 超时：标记 DB decision 为 timed_out，发 hitl_timeout 事件，按策略处理
             await expire_decision(self.db, decision_id)
-            on_timeout = hitl_policy.on_timeout if hitl_policy else "abort"
             await insert_event(
                 self.db, self.task_id, TaskEventKind.hitl_timeout,
                 {
                     "decision_id": decision_id,
                     "kind": DecisionKind.tool_permission.value,
                     "permission_id": permission_id,
-                    "on_timeout": on_timeout,
+                    "on_timeout": on_timeout_action,
+                    "resolved_choice": default_timeout_choice.value,
                 },
             )
-            if on_timeout == "abort":
+            if default_timeout_choice == DecisionChoice.abort:
                 self._signal_abort("hitl_timeout", decision_id)
+                opencode_response = "reject"
+            else:
+                opencode_response = "once"
             logger.warning(
-                "task %s: permission HITL timeout (decision_id=%s)",
-                self.task_id, decision_id,
+                "task %s: permission HITL timeout (decision_id=%s, on_timeout=%s, resolved_choice=%s)",
+                self.task_id,
+                decision_id,
+                on_timeout_action,
+                default_timeout_choice.value,
             )
 
         # 回传 opencode
@@ -536,6 +543,7 @@ class OpenCodeDriver:
         plan_text = self._plan_text or ""
         hitl_policy = self.request.hitl_policy
         timeout_sec = hitl_policy.decision_timeout_sec if hitl_policy else 600
+        on_timeout_action, default_timeout_choice = self._resolve_hitl_timeout_policy()
 
         decision_id = str(uuid.uuid4())
 
@@ -556,7 +564,7 @@ class OpenCodeDriver:
                 DecisionChoice.revise,
                 DecisionChoice.abort,
             ],
-            default_on_timeout=DecisionChoice.abort,
+            default_on_timeout=default_timeout_choice,
             expires_at=None,
             context={"plan_text": plan_text},
         )
@@ -580,14 +588,22 @@ class OpenCodeDriver:
         else:
             # 超时：标记 DB decision 为 timed_out，发 hitl_timeout 事件
             await expire_decision(self.db, decision_id)
-            choice_val = (hitl_policy.on_timeout if hitl_policy else "abort")
+            choice_val = default_timeout_choice.value
             await insert_event(
                 self.db, self.task_id, TaskEventKind.hitl_timeout,
                 {
                     "decision_id": decision_id,
                     "kind": DecisionKind.plan_approval.value,
-                    "on_timeout": choice_val,
+                    "on_timeout": on_timeout_action,
+                    "resolved_choice": choice_val,
                 },
+            )
+            logger.warning(
+                "task %s: plan approval HITL timeout (decision_id=%s, on_timeout=%s, resolved_choice=%s)",
+                self.task_id,
+                decision_id,
+                on_timeout_action,
+                choice_val,
             )
 
         await insert_event(
@@ -757,6 +773,31 @@ class OpenCodeDriver:
             self._abort_reason = reason
             self._abort_decision_id = decision_id
         self._abort_event.set()
+
+    def _resolve_hitl_timeout_policy(self) -> tuple[str, DecisionChoice]:
+        """将 HitlPolicy.on_timeout 解析为规范动作及超时默认决策。
+
+        当前 Worker 没有独立的外部 escalation 通道，因此：
+            - abort     -> 超时即中止
+            - continue  -> 超时视为 approve，继续任务
+            - escalate  -> 先发 hitl_timeout 事件通知上游，再按 approve 继续
+
+        返回：
+            (normalized_action, fallback_choice)
+        """
+        raw_action = self.request.hitl_policy.on_timeout if self.request.hitl_policy else "abort"
+        action = str(raw_action or "abort").lower()
+        if action == "abort":
+            return action, DecisionChoice.abort
+        if action in {"continue", "escalate"}:
+            return action, DecisionChoice.approve
+
+        logger.warning(
+            "task %s: unsupported hitl on_timeout=%r, fallback to abort",
+            self.task_id,
+            raw_action,
+        )
+        return "abort", DecisionChoice.abort
 
     async def _wait_for_decision(
         self,

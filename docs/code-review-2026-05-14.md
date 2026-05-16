@@ -105,6 +105,8 @@
 - **问题**：仅识别 `"abort"`，其它字符串走 default else，导致 `_abort_event` 不触发但 `choice_val` 又不是 `approve` → plan 路径必抛 RuntimeError。
 - **方向**：完整实现三分支，或在 schema 中收窄到只支持 `"abort"`，文档同步。
 
+> **2026-05-16 修订**：该项已修复。driver 现在统一解析 `on_timeout`，对 `continue` / `escalate` 在超时后保留 `hitl_timeout` 事件通知，同时将 fallback 归一化为 `approve`，不再误入 abort / failure 路径。
+
 ### P1-14 `HitlPolicy.auto_approve` 字段未实现
 - **位置**：[src/worker/contract/task.py:278-286](../src/worker/contract/task.py#L278-L286)
 - **问题**：driver 完全不消费，配置是否生效对用户而言是黑盒。
@@ -203,7 +205,7 @@
 ### Sprint 1（可靠性）
 6. P1-9/P1-10：WAL + per-task lock
 7. P1-11：把 metrics helper 接进 queue/driver/sandbox 关键路径
-8. P1-13/P1-14：on_timeout 全路径实现 + auto_approve 实现（或从 schema 收窄）
+8. P1-14：auto_approve 实现（P1-13 已于 2026-05-16 修复）
 9. P1-16/P1-17：状态流转去重 + queued 任务恢复策略
 10. P1-19：磁盘 GC 定时任务
 

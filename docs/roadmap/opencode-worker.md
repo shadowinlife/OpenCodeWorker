@@ -8,9 +8,10 @@
 > - ✅ **Phase 2 — 已归档**：Docker Sandbox + Workspace **代码实现完成**；镜像构建 + 安全回归 7/7 PASS（2026-05-14，见 Phase 2.5 退出检查）。
 >   - ⚠️ **Broker 出口代理推迟到 Phase 7**：CONNECT 隧道占位、broker 进程未在 lifespan 启动（P0-1 / P0-3）；MVP 阶段 `WORKER_BROKER_ENABLED` 默认 `false`，容器网络 `internal=False`（P0-2 已确认 MVP 接受降级）。详见 [code-review-2026-05-14.md](../code-review-2026-05-14.md) 与 [ADR-004 实现状态表](../adr/ADR-004-broker-boundary.md)。
 > - ✅ **Phase 3 — 已归档**：OpenCode HTTP Adapter + oh-my agent 路由 + HITL 接入，E2E 天齐锂业分析跑通。
->   - ⚠️ agent 名误用为 `plan`/`build`（P0-5），需改回 `Prometheus`/`Sisyphus`。
+>   - ✅ **2026-05-16 修订**：P0-5 / P0-6 / P0-7 已修复；agent 恢复为 `Prometheus` / `Sisyphus`，timeout / abort 终态分别落为 `task_timed_out` / `task_aborted`。
 > - ✅ **Phase 5 — 已归档**：HITL 闭环、超时事件、mode escalation、断线重连。
->   - ⚠️ `on_timeout="continue|escalate"`、`auto_approve` 字段未实现（P1-13 / P1-14）。
+>   - ✅ **2026-05-16 修订**：P1-13 已修复；`on_timeout="continue|escalate"` 超时后不再误入 abort/failure 路径。
+>   - ⚠️ `auto_approve` 字段仍未实现（P1-14）。
 > - 🟡 **Phase 6 — 部分完成，待收尾**：metrics / logging 框架已就位，**但 metrics 计数器无 callsite**（P1-11）；集成测试套与安全回归脚本待自动化。
 > - ⬜ **Phase 7** — 规划中（多租户 / 加密 / 跨节点等）。
 >
@@ -157,7 +158,7 @@
   "resource_limits": {"cpu":"2","memory":"4Gi","pids":512,"timeout_sec":1800},
   "hitl_policy": {
     "decision_timeout_sec": 600,
-    "on_timeout": "abort",                  // MVP 仅支持 abort
+    "on_timeout": "abort",                  // 示例值；continue/escalate 会在 driver 端归一化为 approve fallback
     "auto_approve": []                      // 默认空；可白名单某些低风险 permission kind
   },
   "broker_policy": {
@@ -281,11 +282,12 @@ pending
 > **状态：✅ 已归档（commit e32c5e5，2026-05-14；E2E 天齐锂业分析跑通）**
 >
 > **2026-05-16 修订**：`[REVIEW: P0-5]` 已修复，当前容器运行时重新使用 `Prometheus` / `Sisyphus`，不再走内置 `plan` / `build` fallback。
+> **2026-05-16 修订**：`[REVIEW: P0-6]` / `[REVIEW: P0-7]` 已修复；driver 现在抛 `TaskTimedOutError` / `TaskAbortedError`，queue 分别写入 `task_timed_out` / `task_aborted` 终态事件。
 >
 > **Review 警示（见 [code-review-2026-05-14.md](../code-review-2026-05-14.md)）**：
-> - `[REVIEW: P0-5]` agent 名误用为 `"plan"` / `"build"`（opencode 内置）而非 `"Prometheus"` / `"Sisyphus"`（oh-my）；与 ADR-001 / ADR-006 不一致。E2E 表面跑通但 agent 路由路径与 ADR 不符。
-> - `[REVIEW: P0-6]` `task_timed_out` 事件类型缺失，超时被错误转为 `task_failed`。
-> - `[REVIEW: P0-7]` HITL abort 路径错误地写入 `task_failed` 而非 `task_aborted`。
+> - `[REVIEW: P0-5]` agent 名误用为 `"plan"` / `"build"`（opencode 内置）而非 `"Prometheus"` / `"Sisyphus"`（oh-my）；与 ADR-001 / ADR-006 不一致。该项已于 2026-05-16 修复。
+> - `[REVIEW: P0-6]` `task_timed_out` 事件类型缺失，超时被错误转为 `task_failed`。该项已于 2026-05-16 修复。
+> - `[REVIEW: P0-7]` HITL abort 路径错误地写入 `task_failed` 而非 `task_aborted`。该项已于 2026-05-16 修复。
 > - `[REVIEW: P1-15]` `respond_permission="reject"` 在 opencode 中是单次拒绝，driver 没有 reject 计数上限，极端场景可能死循环到任务超时。
 
 **主要交付**：`adapters/opencode/client.py`（health/SSE/session/message/prompt_async/permission/diff/abort 全链路）；`event_stream.py` opencode↔TaskEvent 映射；`plan_first`（Prometheus）与 `direct_execute`（Sisyphus）双模式；`_handle_plan_approval` + `_handle_permission` HITL 路径；artifact 收集（diff + transcript）；E2E 天齐锂业分析跑通（commit e32c5e5）。
@@ -299,7 +301,7 @@ pending
 > **状态：✅ 已归档（commit fbaa13b，2026-05-14）**
 >
 > **Review 警示（见 [code-review-2026-05-14.md](../code-review-2026-05-14.md)）**：
-> - `[REVIEW: P1-13]` `HitlPolicy.on_timeout="continue"` / `"escalate"` 路径未实现，仅识别 `"abort"`；schema 定义与实际行为不一致。
+> - `[REVIEW: P1-13]` `HitlPolicy.on_timeout="continue"` / `"escalate"` 路径未实现，仅识别 `"abort"`；schema 定义与实际行为不一致。该项已于 2026-05-16 修复：超时时统一归一化为 `approve` fallback，并保留 `hitl_timeout` 事件通知上游。
 > - `[REVIEW: P1-14]` `HitlPolicy.auto_approve` 字段未实现，driver 完全不查；配置生效与否对用户为黑盒。
 > - `[REVIEW: P1-10]` `_next_event_id` 在并发写入下存在 UNIQUE 冲突 race；driver 的 `_consume_sse` 与 `_handle_permission` 并发场景下会触发。
 
@@ -403,9 +405,9 @@ Phase 6 退出检查：
 
 | ID | 问题 | 修复方向 |
 |---|---|---|
-| P0-5 | agent 名误用 `"plan"`/`"build"`，与 ADR 不符 | 改为 `"Prometheus"`/`"Sisyphus"` |
-| P0-6 | `task_timed_out` 事件类型缺失，超时错转 `task_failed` | 补充 `task_timed_out` TaskEventKind + driver 分支 |
-| P0-7 | HITL abort 路径写 `task_failed` 而非 `task_aborted` | abort 路径改写正确终态事件 |
+| P0-5 | agent 名误用 `"plan"`/`"build"`，与 ADR 不符 | 已于 2026-05-16 修复：恢复 `"Prometheus"`/`"Sisyphus"` |
+| P0-6 | `task_timed_out` 事件类型缺失，超时错转 `task_failed` | 已于 2026-05-16 修复：补充 `task_timed_out` + `TaskTimedOutError` + queue 分流 |
+| P0-7 | HITL abort 路径写 `task_failed` 而非 `task_aborted` | 已于 2026-05-16 修复：改为 `TaskAbortedError` + `task_aborted` 终态 |
 | P0-4 | `local` workspace 模式以 root + 关只读 FS 启动 | 强制 uid 1000 + `--read-only` |
 | P0-8 | artifact 路径未校验，存在路径穿越风险 | 下载前 resolve + prefix 校验 |
 | P0-1/P0-3 | Broker CONNECT 隧道占位 + lifespan 未启动 broker | 推迟 Phase 7，在此记录已知缺陷 |
@@ -418,7 +420,7 @@ Phase 6 退出检查：
 | P1-10 | `_next_event_id` 并发 UNIQUE 冲突 race | 改用 DB `MAX(id)+1` 或序列化写入 |
 | P1-11 | metrics helper 全仓 0 callsite，`/metrics` 永远空 | orchestrator/routes 关键路径接入 counter |
 | P1-12 | SSE 实时推送是 0.5s polling 而非事件驱动 | asyncio.Event 替换 sleep 轮询 |
-| P1-13 | `on_timeout="continue"`/`"escalate"` 路径未实现 | driver 补充 continue/escalate 分支 |
+| P1-13 | `on_timeout="continue"`/`"escalate"` 路径未实现 | 已于 2026-05-16 修复：driver 统一归一化 continue/escalate timeout fallback |
 | P1-14 | `auto_approve` 字段 driver 完全不查 | driver 读取字段，自动通过低风险决策 |
 | P1-15 | `reject` 无计数上限，极端场景死循环 | driver 加 reject 计数器 + 上限中止 |
 | P1-16 | 状态机无效转换未拒绝 | `transition()` 加合法前置状态校验 |
@@ -446,4 +448,4 @@ Phase 6 退出检查：
 | Orchestrator 集成（HITL 时序） | 无 | stub server 驱动的决策早到/晚到/超时场景 |
 | 安全回归脚本化 | 手工 | pytest + Docker fixture 自动运行 |
 | Contract JSON Schema 校验 | 无 | 上游 TaskRequest/Event 通过 JSON Schema 严格校验 |
-| abort/timeout 终态事件 | 无 | P0-6/P0-7 修复后补充端到端用例 |
+| abort/timeout 终态事件 | 已有单元测试覆盖（`tests/unit/test_terminal_exceptions.py`） | 补充 driver/queue 级端到端用例，覆盖真实终态落库与 SSE 输出 |
