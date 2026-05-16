@@ -400,9 +400,23 @@ async def download_artifact(task_id: str, artifact_id: str):
             detail=f"artifact {artifact_id} not found for task {task_id}",
         )
 
-    # 安全检查：防止路径穿越（get_artifact_path 从 DB 读取，但防御性检查无害）
+    # 安全检查：防止路径穿越——必须在受信任的 artifacts_dir 子树内
     from pathlib import Path
+    from worker.config import get_settings
+    settings = get_settings()
+    artifacts_root = settings.artifacts_dir.resolve()
     resolved = Path(file_path).resolve()
+    try:
+        resolved.relative_to(artifacts_root)
+    except ValueError:
+        logger.warning(
+            "artifact path escape blocked: artifact=%s task=%s path=%s root=%s",
+            artifact_id, task_id, resolved, artifacts_root,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="artifact path is outside the trusted artifacts directory",
+        )
     if not resolved.exists():
         raise HTTPException(
             status_code=404,

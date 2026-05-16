@@ -2,10 +2,38 @@
 
 | 字段 | 值 |
 |---|---|
-| **状态** | Accepted |
+| **状态** | Accepted（决策本身有效；**broker 完整交付推迟到 Phase 7**，见下方"MVP 阶段决策"） |
 | **日期** | 2026-05-13 |
-| **关联 Spike** | Phase 0 Spike 5（Broker 最小原型，待完成） |
+| **更新日期** | 2026-05-14（撤回 MVP 默认 broker，明确 Phase 7 交付） |
+| **关联 Spike** | Phase 0 Spike 5（Broker 最小原型，部分完成 — 见实现状态） |
 | **关联 HITL** | H1（Broker 与 MCP 关系），H1b（白名单粒度），H8（凭据代理，决策：不做） |
+
+---
+
+## MVP 阶段决策（2026-05-14 修订）
+
+> 经 [code-review-2026-05-14.md](../code-review-2026-05-14.md) 评审确认：
+>
+> 1. **MVP 阶段不再把 broker 视作默认安全模型**。`WORKER_BROKER_ENABLED` 默认值已改为 `False`，调用方启用前需自行确认 broker 进程已可用。
+> 2. **容器网络当前为 `internal=False`**：容器可直连任意外网。原"默认无外网，仅可访问 Host Broker"的对外承诺**撤回**到 Phase 7（与 broker CONNECT 隧道、broker 进程 lifespan 启停一同恢复）。
+> 3. **MVP 阶段的容器隔离仅依赖**：非 root（uid=1000）+ read-only root FS + cap-drop + no-new-privileges + seccomp + workspace 路径校验。这些手段不能替代网络隔离；调用方在合规/审计等场景下需自行通过 host firewall / VPC ACL / namespace 兜底。
+> 4. 未来恢复 `internal=True` 默认时（Phase 7），E2E 通过显式开关 `WORKER_SANDBOX_NETWORK_INTERNAL=false` 短路。
+
+---
+
+## 实现状态（2026-05-14 review 输出）
+
+> 详见 [code-review-2026-05-14.md](../code-review-2026-05-14.md) P0-1/P0-2/P0-3。
+
+| 子能力 | 决策（MVP / Phase 7） | 当前实现 | 备注 |
+|---|---|---|---|
+| 域名级白名单（按 task 动态下发） | ✅ MVP | ✅ | `src/broker/policy.py` 完整；broker 未联通前不实际生效 |
+| HTTP forward proxy（普通 GET/POST） | ✅ MVP | ✅ | `_handle_http_forward` 可用；broker 未联通前未生效 |
+| HTTPS CONNECT 隧道 | ⏸️ **延迟到 Phase 7** | ❌ | `_handle_proxy_connect` 是占位代码；Starlette 路由表未注册 CONNECT 方法 |
+| Broker 进程在 lifespan 启动 | ⏸️ **延迟到 Phase 7** | ❌ | `main.py` lifespan 未启动 broker；`HTTP_PROXY=http://broker:8090` 无人监听 |
+| 容器网络 `internal=True`（broker 是唯一出口） | ⏸️ **延迟到 Phase 7** | ❌ | `ensure_worker_network` 强制 `internal=False`，容器可直连外网 |
+
+**当前可用范围**：仅 `WORKER_BROKER_ENABLED=false`（local / E2E 模式）路径已端到端验证；`broker_enabled=True` 路径**不要在生产环境打开**——即便打开，HTTP_PROXY 也无人监听。
 
 ---
 

@@ -32,15 +32,25 @@
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | Phase 0 | 架构决策（ADR 001~006）+ 本机自检（opencode / oh-my-opencode）| ✅ 完成 |
-| Phase 1 | Worker Contract & API 骨架（本次提交）| 🚧 进行中 |
-| Phase 2 | Orchestrator 完整实现（容器生命周期、opencode 驱动）| ⬜ 待开始 |
-| Phase 3 | 网络隔离（egress 白名单）| ⬜ 待开始 |
-| Phase 4 | 崩溃恢复、任务重播 | ⬜ 待开始 |
-| Phase 5 | 镜像构建 CI | ⬜ 待开始 |
-| Phase 6 | 集成测试 | ⬜ 待开始 |
-| Phase 7 | 多租户、加密、跨节点调度等高级特性 | ⬜ 规划中 |
+| Phase 1 | Worker Contract & API 骨架 | ✅ 完成 |
+| Phase 2 | Docker Sandbox + Workspace（broker 进程启停 / CONNECT 隧道见 ⚠️ 安全模型说明）| ✅ 完成 |
+| Phase 3 | OpenCode HTTP Adapter + HITL 接入（E2E 跑通）| ✅ 完成 |
+| Phase 5 | HITL 闭环、超时事件、断线重连 | ✅ 完成 |
+| Phase 6 | 可观测性（metrics 计数器接入待补）+ 集成测试 | 🟡 部分完成 |
+| Phase 7 | 多租户 / 加密 / 跨节点调度 / **broker 出口代理完整实现** | ⬜ 规划中 |
 
-详细路线图见 [docs/roadmap/opencode-worker.md](docs/roadmap/opencode-worker.md)。
+详细路线图见 [docs/roadmap/opencode-worker.md](docs/roadmap/opencode-worker.md)，最近一次全量 code review：[docs/code-review-2026-05-14.md](docs/code-review-2026-05-14.md)。
+
+## ⚠️ MVP 安全模型现状（2026-05-14 review 校准）
+
+为避免对外承诺与实际行为脱节，本节明确 MVP 阶段的实际隔离边界：
+
+- **容器具备任意出网能力**：`worker-sandbox-net` 当前以 `internal=False` 创建，容器可直连任意外网（含 LLM provider 与公网 MCP）；最初 ADR-004 / Roadmap §H1b 中"默认无外网，仅可访问 Host Broker"的承诺**在 MVP 阶段已撤回**，待 broker 联通后恢复（见 [code-review-2026-05-14.md P0-2](docs/code-review-2026-05-14.md)）。
+- **Broker 出口代理推迟到 Phase 7**：CONNECT 隧道是占位实现、broker 进程未在 lifespan 启动，因此 `WORKER_BROKER_ENABLED=true` 路径**不要在生产环境打开**——即便打开，HTTP_PROXY 也无人监听。Worker 默认值已改为 `WORKER_BROKER_ENABLED=false`（见 [ADR-004 实现状态](docs/adr/ADR-004-broker-boundary.md)）。
+- **进程内仍生效的隔离手段**：非 root（uid=1000）+ read-only root FS + tmpfs / cap-drop / no-new-privileges + seccomp（见 ADR-002 §安全回归）+ workspace 路径穿越防护 + `WORKER_ALLOW_HOST_MOUNT` 默认关闭（拒绝 `workspace.kind=local` 的 host bind mount，见 P0-4 修复）。
+- **artifact 下载已强制路径约束**：仅允许下载 `data/artifacts/` 子树内文件（P0-8 修复）。
+
+调用方在外网访问、凭据隔离、出口审计等方面的合规要求**不应**仅依赖本仓库 MVP 默认配置，必要时由上游 runtime 自行加 namespace / firewall / VPC ACL 兜底。
 
 ## 快速启动（Phase 1 骨架）
 

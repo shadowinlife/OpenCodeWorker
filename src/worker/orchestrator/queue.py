@@ -25,6 +25,7 @@ from typing import Awaitable, Callable, Optional
 
 from worker.config import get_settings
 from worker.contract.event import TaskEventKind
+from worker.contract.exceptions import TaskAbortedError, TaskTimedOutError
 from worker.contract.task import TaskStatus
 from worker.storage.db import get_db
 from worker.storage.repo import insert_event, update_task_status
@@ -111,11 +112,14 @@ async def _worker_loop() -> None:
 async def _run_one(task_id: str) -> None:
     """在 semaphore 槽位内执行单个任务。
 
-    执行流程（Phase 1 stub）：
+    执行流程：
         1. 等待 semaphore（若并发满则阻塞）
         2. 更新状态为 starting_container，发出 task_started 事件
         3. 若有注册的 executor 则调用；否则走 stub 路径直接完成
-        4. 异常时标记 failed 并写 task_failed 事件
+        4. 异常分发到对应终态：
+            TaskTimedOutError → timed_out + task_timed_out
+            TaskAbortedError  → aborted   + task_aborted
+            其它 Exception    → failed    + task_failed
     """
     assert _semaphore is not None, "start_queue_worker() 未被调用"
     async with _semaphore:
@@ -135,17 +139,49 @@ async def _run_one(task_id: str) -> None:
                 )
                 await update_task_status(db, task_id, TaskStatus.completed)
                 await insert_event(db, task_id, TaskEventKind.task_completed)
+        except TaskTimedOutError as exc:
+            logger.warning("task %s timed out: %s", task_id, exc)
+            await _write_terminal(
+                task_id,
+                TaskStatus.timed_out,
+                TaskEventKind.task_timed_out,
+                {"timeout_sec": exc.timeout_sec, "message": str(exc)},
+            )
+        except TaskAbortedError as exc:
+            logger.info("task %s aborted (reason=%s): %s", task_id, exc.reason, exc)
+            payload: dict = {"reason": exc.reason, "message": str(exc)}
+            if exc.decision_id is not None:
+                payload["decision_id"] = exc.decision_id
+            await _write_terminal(
+                task_id,
+                TaskStatus.aborted,
+                TaskEventKind.task_aborted,
+                payload,
+            )
         except Exception as exc:
             logger.exception("task %s execution failed: %s", task_id, exc)
-            db2 = await get_db()  # 防止 exc 是 DB 连接错误导致 db 不可用
-            try:
-                await update_task_status(db2, task_id, TaskStatus.failed)
-                await insert_event(
-                    db2,
-                    task_id,
-                    TaskEventKind.task_failed,
-                    {"error": str(exc), "error_type": type(exc).__name__},
-                )
-            except Exception:
-                # 连 DB 写入都失败时只能记录日志，不能再抛出（会静默退出）
-                logger.exception("task %s: failed to write failure event", task_id)
+            await _write_terminal(
+                task_id,
+                TaskStatus.failed,
+                TaskEventKind.task_failed,
+                {"error": str(exc), "error_type": type(exc).__name__},
+            )
+
+
+async def _write_terminal(
+    task_id: str,
+    status: TaskStatus,
+    event_kind: TaskEventKind,
+    payload: dict,
+) -> None:
+    """写入终态状态 + 终态事件，吞下任何 DB 错误（最后一道防线）。"""
+    try:
+        db = await get_db()
+        await update_task_status(db, task_id, status)
+        await insert_event(db, task_id, event_kind, payload)
+    except Exception:
+        # 连 DB 写入都失败时只能记录日志，不能再抛出（会静默退出）
+        logger.exception(
+            "task %s: failed to write terminal event %s",
+            task_id, event_kind.value,
+        )

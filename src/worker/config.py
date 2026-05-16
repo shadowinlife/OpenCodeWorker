@@ -88,13 +88,23 @@ class Settings(BaseSettings):
     # 沙箱容器使用的 Docker network 名称（internal=True，无外网访问）
     sandbox_network: str = "worker-sandbox-net"
 
+    # 是否允许 workspace.kind="local"（host bind mount，root + 关只读 FS）
+    # 默认关闭——local 模式会以 root 挂载宿主目录、关闭只读根文件系统，
+    # 任何上游若能控制请求体即可绕过 MVP 的"非 root + read-only FS"安全策略。
+    # 仅在受信任的开发/调试环境（用户掌控全部调用方）显式打开。
+    # 环境变量：WORKER_ALLOW_HOST_MOUNT=true
+    allow_host_mount: bool = False
+
     # ------------------------------------------------------------------ #
-    # Host Broker（Phase 2）                                                #
+    # Host Broker（推迟到 Phase 7，MVP 阶段不视作默认安全模型）             #
     # ------------------------------------------------------------------ #
     # 是否启用 Broker 出口代理（True = 注入 HTTP_PROXY 并管控容器出站流量）
-    # 设为 False 时容器直接访问外网，适用于无 Broker 基础设施的开发/E2E 环境
-    # 环境变量：WORKER_BROKER_ENABLED=false
-    broker_enabled: bool = True
+    # ⚠️ MVP 阶段默认 False：CONNECT 隧道与 broker 进程启停尚未实现
+    # （见 docs/code-review-2026-05-14.md P0-1/P0-3、ADR-004 实现状态表）。
+    # 即便显式设为 True，也只会注入 HTTP_PROXY 环境变量，宿主上无人监听，
+    # 容器对外请求会立即失败。在 broker 完整实现前不要打开此开关。
+    # 环境变量：WORKER_BROKER_ENABLED=true
+    broker_enabled: bool = False
     # Broker 服务监听地址（Worker 进程本机）
     broker_host: str = "127.0.0.1"
     broker_port: int = 8090

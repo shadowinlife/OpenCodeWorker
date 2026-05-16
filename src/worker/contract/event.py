@@ -54,9 +54,12 @@ class TaskEventKind(str, Enum):
         artifact_ready: 有新产物可下载（payload.artifact_id, payload.type）
 
     终止事件（TERMINAL_EVENT_KINDS 成员）：
-        task_completed: 任务成功结束
-        task_failed:    任务异常失败（payload.error 包含 WorkerError 序列化）
-        task_aborted:   任务被主动中止
+        task_completed:  任务成功结束
+        task_failed:     任务异常失败（payload.error 包含 WorkerError 序列化）
+        task_aborted:    任务被主动中止（payload.reason 区分 user_requested /
+                         hitl_timeout / plan_rejected / permission_rejected）
+        task_timed_out:  超过 resource_limits.timeout_sec 未完成
+                         （payload.timeout_sec 给出当时的超时阈值）
 
     建议性事件：
         mode_escalation_suggested: direct_execute 模式中 LLM 检测到任务超出
@@ -83,6 +86,7 @@ class TaskEventKind(str, Enum):
     task_completed = "task_completed"
     task_failed = "task_failed"
     task_aborted = "task_aborted"
+    task_timed_out = "task_timed_out"
     mode_escalation_suggested = "mode_escalation_suggested"
     heartbeat = "heartbeat"
 
@@ -92,6 +96,7 @@ TERMINAL_EVENT_KINDS: frozenset[TaskEventKind] = frozenset({
     TaskEventKind.task_completed,
     TaskEventKind.task_failed,
     TaskEventKind.task_aborted,
+    TaskEventKind.task_timed_out,
 })
 
 
