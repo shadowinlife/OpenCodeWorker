@@ -41,6 +41,7 @@ from worker.config import get_settings
 from worker.contract.artifact import Artifact, ArtifactType
 from worker.contract.decision import DecisionChoice, DecisionKind, DecisionRequest
 from worker.contract.event import TaskEventKind
+from worker.contract.exceptions import TaskAbortedError, TaskTimedOutError
 from worker.contract.task import TaskMode, TaskRequest, TaskStatus
 from worker.storage.repo import (
     expire_decision,
@@ -53,7 +54,7 @@ from worker.storage.repo import (
 
 logger = logging.getLogger(__name__)
 
-# Agent 路由对齐 ADR-001 / ADR-006 / oh-my-openagent 3.17.2：
+# Agent 路由对齐 ADR-001 / ADR-006 / oh-my-openagent 4.1.2：
 #   - plan_first    → "Prometheus" （规划 agent，read-only 工具集）
 #   - direct_exec   → "Sisyphus"   （执行 agent，bash/write/edit/webfetch 全开）
 #
@@ -94,6 +95,10 @@ class OpenCodeDriver:
 
         # 中止信号：外部 abort 或超时时设置，SSE 消费循环检测后退出
         self._abort_event = asyncio.Event()
+        # abort 来源（与 TaskAbortedError.reason 对齐）：在 _abort_event.set 时一并赋值，
+        # 由 _run_inner 在抛出 TaskAbortedError 时透传给 queue
+        self._abort_reason: Optional[str] = None
+        self._abort_decision_id: Optional[str] = None
 
         # 累积 assistant 文本（plan_first 时用于提取 plan）
         self._assistant_buffer: list[str] = []
@@ -112,8 +117,10 @@ class OpenCodeDriver:
     async def run(self) -> None:
         """执行完整 Phase 3 驱动逻辑，由 orchestrator._drive_opencode 调用。
 
-        超时时抛出 RuntimeError；内部任何未处理异常直接向上冒泡，
-        由 orchestrator 的 except 块写入 task_failed 事件。
+        异常分类（由 queue._run_one 路由到不同终态）：
+            - TaskTimedOutError: 超过 timeout_sec → task_timed_out 终态
+            - TaskAbortedError:  HITL 决策中止/拒绝 → task_aborted 终态
+            - 其它 Exception:    内部错误 → task_failed 终态
         """
         from worker.observability.logging import set_correlation, clear_correlation
         set_correlation(task_id=self.task_id)
@@ -131,7 +138,7 @@ class OpenCodeDriver:
             logger.warning("task %s: timed out after %ds", self.task_id, self.timeout_sec)
             if self.session_id:
                 await client.abort_session(self.session_id)
-            raise RuntimeError(f"task timed out after {self.timeout_sec}s")
+            raise TaskTimedOutError(timeout_sec=self.timeout_sec)
         finally:
             if self.session_id:
                 await client.delete_session(self.session_id)
@@ -246,9 +253,12 @@ class OpenCodeDriver:
         if not self._abort_event.is_set():
             await self._collect_artifacts(session_id)
 
-        # abort_event 由权限超时或 plan 拒绝设置，抛出让 orchestrator 写 aborted
+        # abort_event 由权限超时或 plan 拒绝设置，抛出让 queue 写 task_aborted
         if self._abort_event.is_set():
-            raise RuntimeError("task aborted (HITL decision or permission timeout)")
+            raise TaskAbortedError(
+                reason=self._abort_reason or "system",
+                decision_id=self._abort_decision_id,
+            )
 
     # ── REST 轮询检测 session idle ────────────────────────────────────────────
 
@@ -466,7 +476,7 @@ class OpenCodeDriver:
             if choice == DecisionChoice.approve:
                 opencode_response = "once"
             elif choice == DecisionChoice.abort:
-                self._abort_event.set()
+                self._signal_abort("permission_rejected", decision_id)
                 opencode_response = "reject"
             else:
                 opencode_response = "reject"
@@ -484,7 +494,7 @@ class OpenCodeDriver:
                 },
             )
             if on_timeout == "abort":
-                self._abort_event.set()
+                self._signal_abort("hitl_timeout", decision_id)
             logger.warning(
                 "task %s: permission HITL timeout (decision_id=%s)",
                 self.task_id, decision_id,
@@ -622,8 +632,11 @@ class OpenCodeDriver:
 
         else:
             # reject / revise / abort → 终止任务
-            raise RuntimeError(
-                f"plan rejected/aborted by user (choice={choice_val!r})"
+            self._signal_abort("plan_rejected", decision_id)
+            raise TaskAbortedError(
+                reason="plan_rejected",
+                message=f"plan rejected/aborted by user (choice={choice_val!r})",
+                decision_id=decision_id,
             )
 
     # ── 产物收集 ──────────────────────────────────────────────────────────────
@@ -734,6 +747,16 @@ class OpenCodeDriver:
             if last_user:
                 return [{"type": "text", "text": last_user.content}]
         return [{"type": "text", "text": "Begin task."}]
+
+    def _signal_abort(self, reason: str, decision_id: Optional[str] = None) -> None:
+        """记录 abort 来源并触发 _abort_event。
+
+        在多次触发时保留首个 reason（首次决定终态原因），后续仅刷新 decision_id 不变。
+        """
+        if not self._abort_event.is_set():
+            self._abort_reason = reason
+            self._abort_decision_id = decision_id
+        self._abort_event.set()
 
     async def _wait_for_decision(
         self,

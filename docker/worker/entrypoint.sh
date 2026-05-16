@@ -41,6 +41,30 @@ fi
 # 配置目录（在 tmpfs /tmp 内，读写 FS 受限场景下安全）
 CONFIG_DIR="${HOME}/.config/opencode"
 mkdir -p "${CONFIG_DIR}"
+CONFIG_PATH="${CONFIG_DIR}/opencode.json"
+
+# 将 Worker 注入的内联 JSON materialize 为 opencode.json。
+# 仅传环境变量时，opencode 不会稳定地把 plugin/provider 配置应用到运行时。
+python3 - "${CONFIG_PATH}" <<'PY'
+import json
+import os
+import sys
+
+config_path = sys.argv[1]
+config_content = os.environ["OPENCODE_CONFIG_CONTENT"]
+
+try:
+    parsed = json.loads(config_content)
+except json.JSONDecodeError as exc:
+    print(f"[entrypoint] ERROR: invalid OPENCODE_CONFIG_CONTENT: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+with open(config_path, "w", encoding="utf-8") as handle:
+    json.dump(parsed, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+PY
+
+echo "[entrypoint] wrote opencode config to ${CONFIG_PATH}"
 
 echo "[entrypoint] starting opencode serve on port ${PORT}"
 
@@ -97,38 +121,60 @@ else:
     print("[entrypoint] FATAL: opencode failed /global/health within 30s", file=sys.stderr)
     sys.exit(3)
 
-# 2) 校验 oh-my-openagent 已注册 Prometheus + Sisyphus
-try:
-    status, body = _get("/agent", timeout=5.0)
-except Exception as exc:
-    print(f"[entrypoint] FATAL: GET /agent failed: {exc}", file=sys.stderr)
-    sys.exit(4)
-
-print(f"[entrypoint] /agent status={status} body={body[:500]}", flush=True)
-
 required = ("Prometheus", "Sisyphus")
-# 同时支持 JSON 解析校验和子串兜底校验，以防 opencode /agent 响应 schema 变化。
-found_via_json: set[str] = set()
-try:
-    parsed = json.loads(body)
-    if isinstance(parsed, list):
-        items = parsed
-    elif isinstance(parsed, dict):
-        items = parsed.get("agents") or parsed.get("items") or []
-    else:
-        items = []
-    for item in items:
-        name = item.get("name") if isinstance(item, dict) else None
-        if name in required:
-            found_via_json.add(name)
-except (ValueError, TypeError):
-    pass
 
-missing = [name for name in required
-           if name not in found_via_json and f'"{name}"' not in body and name not in body]
-if missing:
+def _missing_agents(body: str) -> list[str]:
+    # 同时支持 JSON 解析校验和子串兜底校验，以防 opencode /agent 响应 schema 变化。
+    found_via_json: set[str] = set()
+    try:
+        parsed = json.loads(body)
+        if isinstance(parsed, list):
+            items = parsed
+        elif isinstance(parsed, dict):
+            items = parsed.get("agents") or parsed.get("items") or []
+        else:
+            items = []
+        for item in items:
+            name = item.get("name") if isinstance(item, dict) else None
+            if isinstance(name, str):
+                for required_name in required:
+                    if required_name in name:
+                        found_via_json.add(required_name)
+    except (ValueError, TypeError):
+        pass
+
+    return [
+        name for name in required
+        if name not in found_via_json and f'"{name}"' not in body and name not in body
+    ]
+
+
+# 2) 校验 oh-my-openagent 已注册 Prometheus + Sisyphus
+last_status = None
+last_body = ""
+last_error = None
+missing = list(required)
+
+for attempt in range(1, 31):
+    try:
+        status, body = _get("/agent", timeout=2.0)
+        last_status = status
+        last_body = body
+        missing = _missing_agents(body)
+        if not missing:
+            print(f"[entrypoint] /agent ready after {attempt}s status={status} body={body[:500]}", flush=True)
+            print(f"[entrypoint] verified oh-my-openagent agents loaded: {', '.join(required)}", flush=True)
+            break
+    except Exception as exc:
+        last_error = exc
+    time.sleep(1)
+else:
+    if last_status is None:
+        print(f"[entrypoint] FATAL: GET /agent failed within 30s: {last_error}", file=sys.stderr)
+        sys.exit(4)
+    print(f"[entrypoint] /agent last_status={last_status} body={last_body[:500]}", flush=True)
     print(
-        f"[entrypoint] FATAL: oh-my-openagent NOT loaded — missing required agents: {missing}",
+        f"[entrypoint] FATAL: oh-my-openagent NOT loaded after 30s — missing required agents: {missing}",
         file=sys.stderr,
     )
     print(
@@ -137,8 +183,6 @@ if missing:
         file=sys.stderr,
     )
     sys.exit(5)
-
-print(f"[entrypoint] verified oh-my-openagent agents loaded: {', '.join(required)}", flush=True)
 PY
 verify_rc=$?
 set -e

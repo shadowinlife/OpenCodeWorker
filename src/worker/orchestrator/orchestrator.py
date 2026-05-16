@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 
 WORKER_DOCKER_NETWORK = "worker-sandbox-net"
+OPENCODE_PLUGIN_ENTRY = "oh-my-openagent@latest"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -92,6 +93,14 @@ async def run_task(task_id: str) -> None:
     workspace_dir: Optional[Path] = None
 
     try:
+        # ── Step 0: 安全门——拒绝未授权的 host bind mount ───────────────────
+        if request.workspace.kind == "local" and not settings.allow_host_mount:
+            raise PermissionError(
+                "workspace.kind='local' is disabled by policy. "
+                "Set WORKER_ALLOW_HOST_MOUNT=true to allow host bind-mount workspaces "
+                "(this disables non-root + read-only FS isolation for that task)."
+            )
+
         # ── Step 1: 准备 workspace ────────────────────────────────────────────
         await update_task_status(db, task_id, TaskStatus.preparing_workspace)
         await insert_event(db, task_id, TaskEventKind.task_started,
@@ -292,6 +301,8 @@ def _build_container_env(
     profile = request.opencode_profile
     config_content: dict = {
         "autoupdate": False,
+        # oh-my-openagent 需要在 opencode 配置中显式声明，单靠 cache 目录不会加载。
+        "plugin": [OPENCODE_PLUGIN_ENTRY],
     }
     if profile:
         if profile.model:

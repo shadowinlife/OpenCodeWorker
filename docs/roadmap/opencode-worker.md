@@ -43,7 +43,7 @@
 | Worker API 鉴权 | **静态 Bearer token**（env 配置） |
 | Workspace bundle | **tar.gz**（流式上传 / 引用 URL）+ **git url + commit sha** |
 | 并发模型 | **单 worker 进程 + 内置任务队列**，每任务一容器 |
-| 基础镜像 | **ubuntu:24.04**（本地离线构建），手动 pin opencode 1.14.30 / oh-my-openagent 3.17.2 / MCP 版本；本地构建 + GHCR 私有 tag，不签名 |
+| 基础镜像 | **ubuntu:24.04**（本地离线构建），当前 pin opencode 1.15.0 / oh-my-openagent 4.1.2 / MCP 版本；本地构建 + GHCR 私有 tag，不签名 |
 | 任务模式 | 仅 `plan_first` / `direct_execute`，**去掉 `auto_recommend`**；`direct_execute` 失败仅发 `mode_escalation_suggested` 事件，不自动升级 |
 | Safe-explore 模式 | **不提供**（移 Phase 7） |
 | Debug 模式 | 不开放 `--debug-no-sandbox`；集成测试通过 stub opencode HTTP server |
@@ -67,17 +67,17 @@
 - HTTP/SSE 远程 MCP；MCP 全部 stdio + 随镜像发布。
 - Broker 零密钥凭据代理、MCP server spawn/kill、跨重启任务续跑、`safe_explore` 只读模式、静态加密、cosign 镜像签名。
 
-### 1.3 技术基线（已验证，2026-05-13~14）
+### 1.3 技术基线（已验证，2026-05-13~16）
 
 | 验证项 | 结论 |
 |---|---|
-| opencode `1.14.30` serve endpoints | health/SSE/session/message/prompt_async/diff/abort/permissions 全部实测通过 |
-| `OPENCODE_CONFIG_CONTENT` + `{env:X}` 注入 | 纯 env 注入确认；`GET /config` 可校验配置 |
+| opencode `1.15.0` serve endpoints | `health` / `agent` / plugin load 在 arm64 验证镜像中实测通过；其余 HTTP adapter endpoints 仍沿用 1.14.30 基线验证 |
+| `OPENCODE_CONFIG_CONTENT` + `{env:X}` 注入 | 当前链路为 env 注入 + materialize 到 `~/.config/opencode/opencode.json`；`GET /config` 可校验配置 |
 | `OPENCODE_PERMISSION` 注入 | 实测有效，白名单注入正常 |
 | `OPENCODE_DISABLE_AUTOUPDATE=1` | 验证有效，双层禁用已写入 ADR-002 |
-| oh-my-opencode `3.17.5` CLI smoke tests | Prometheus + Sisyphus 宿主机通过 |
-| 容器内 oh-my-openagent 加载 | `GET /agent` 实测：未自动加载；MVP 走内置 plan/build agent（ADR-001/ADR-006）|
-| 镜像 `worker-sandbox:1.14.30-3.17.2-phase2.5` | 370MB，安全回归 7/7 PASS |
+| oh-my-opencode `4.1.2` CLI | latest 版本已确认；本次修复未重跑宿主机 CLI smoke |
+| 容器内 oh-my-openagent 加载 | `GET /agent` 实测：`1.15.0 + 4.1.2` 在 arm64 镜像中已成功加载，健康检查后约 12 秒出现 `Prometheus` / `Sisyphus` |
+| arm64 验证镜像（1.15.0 / 4.1.2） | 镜像重建成功；entrypoint 通过 `/agent` 校验并输出 `verified oh-my-openagent agents loaded` |
 | Phase 1 API 骨架 smoke test | 10 端点全部通过（2026-05-13）|
 
 > 详细 spike 实测记录已归档，可通过 git history 查阅。
@@ -249,7 +249,7 @@ pending
 | Spike 1a — serve endpoints | HTTP Server 路径完整验证；CLI+tmux 已由 ADR-001 关闭 |
 | Spike 1b — runtime config | `OPENCODE_CONFIG_CONTENT` + `{env:X}` 纯 env 注入；ADR-003 升级 |
 | Spike 2 — PTY POC | 已取消（ADR-001）|
-| Spike 3 — 容器镜像 | `worker-sandbox:1.14.30-3.17.2-phase2.5`，安全回归 7/7 PASS |
+| Spike 3 — 容器镜像 | Phase 2.5 历史镜像已归档；2026-05-16 已升级并验证 `opencode 1.15.0` + `oh-my-openagent 4.1.2` |
 | ADR-001~006 | 全部 Accepted，见 `docs/adr/` |
 
 ---
@@ -262,7 +262,7 @@ pending
 
 ### Phase 2 — Docker Sandbox + Workspace + Broker
 
-> **状态：✅ 已归档（Phase 2 代码 commit df01b23；Phase 2.5 镜像构建 + 安全回归 2026-05-14）**
+> **状态：✅ 已归档（Phase 2 代码 commit df01b23；Phase 2.5 镜像构建 + 安全回归 2026-05-14；运行时 baseline 已于 2026-05-16 升级到 opencode 1.15.0 / oh-my-openagent 4.1.2）**
 >
 > **Review 警示（见 [code-review-2026-05-14.md](../code-review-2026-05-14.md)）**：
 > - `[REVIEW: P0-1]` Broker CONNECT 隧道是占位实现，HTTPS 出口实际不通。
@@ -272,13 +272,15 @@ pending
 >
 > 上述四项不阻塞 Phase 2 归档（代码已落地、镜像已构建、安全回归用例 7/7 PASS），但需在 Phase 6 收尾或 Phase 7 准备前消化。
 
-**主要交付**：Dockerfile（ubuntu:24.04 + opencode 1.14.30 + oh-my 3.17.2，sandbox uid 1000，`--read-only/cap-drop/pids-limit`）；`sandbox/manager.py` 完整生命周期；`workspace/handler.py`（zip-slip/symlink 防逃逸）；`broker/proxy.py` 域名白名单 SSRF 防护；Orchestrator 全链路（workspace→network→policy→container→cleanup）；安全回归 7/7 PASS（commit df01b23）。
+**主要交付**：Dockerfile（ubuntu:24.04 + opencode / oh-my-openagent 离线制品，sandbox uid 1000，`--read-only/cap-drop/pids-limit`）；`sandbox/manager.py` 完整生命周期；`workspace/handler.py`（zip-slip/symlink 防逃逸）；`broker/proxy.py` 域名白名单 SSRF 防护；Orchestrator 全链路（workspace→network→policy→container→cleanup）；安全回归 7/7 PASS（commit df01b23）。2026-05-16 已将运行时 baseline 升级到 `1.15.0 / 4.1.2`。
 
 ---
 
 ### Phase 3 — OpenCode HTTP Server Adapter（含 oh-my agent 路由，Phase 3/4 合并）
 
 > **状态：✅ 已归档（commit e32c5e5，2026-05-14；E2E 天齐锂业分析跑通）**
+>
+> **2026-05-16 修订**：`[REVIEW: P0-5]` 已修复，当前容器运行时重新使用 `Prometheus` / `Sisyphus`，不再走内置 `plan` / `build` fallback。
 >
 > **Review 警示（见 [code-review-2026-05-14.md](../code-review-2026-05-14.md)）**：
 > - `[REVIEW: P0-5]` agent 名误用为 `"plan"` / `"build"`（opencode 内置）而非 `"Prometheus"` / `"Sisyphus"`（oh-my）；与 ADR-001 / ADR-006 不一致。E2E 表面跑通但 agent 路由路径与 ADR 不符。
@@ -387,7 +389,7 @@ Phase 6 退出检查：
 | H8 | Broker 凭据代理（容器零密钥） | **否**；MVP env 注入 API key，零密钥移 Phase 7 |
 | H9 | 数据保留 | workspace 立删 + artifact 7 天 + `DELETE /tasks/:id`；不做静态加密 |
 | H10 | opencode auto-update 禁用 env | ✅ Spike 1b 收口：`OPENCODE_DISABLE_AUTOUPDATE=1`（boolean env）+ `autoupdate: false`（config），已写入 ADR-002 |
-| H11 | oh-my 版本 pin | ✅ ADR-006 收口：pin `oh-my-openagent 3.17.2`（本机已验证，npm latest 4.1.1 升级推迟到 Spike 3 后确认） |
+| H11 | oh-my 版本 pin | ✅ ADR-006 收口：当前 pin `oh-my-openagent 4.1.2`，并已完成 arm64 容器验证 |
 | H12 | `plan_first` 主入口 | ✅ ADR-001 收口：HTTP Server + `prompt_async` 传 `agent:"Prometheus"`；`oh-my-opencode run` 仅用于本机 smoke test；`/start-work` 作为可选验证，不阻塞 MVP |
 
 ---

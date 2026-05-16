@@ -236,14 +236,14 @@ PYTHONPATH=src \
 
 ## 关键实现说明
 
-### opencode 1.14.30 SSE 行为
+### opencode SSE 行为（当前实现按 1.14.30 实测处理）
 
 `/global/event` SSE 端点**仅传输心跳**（`server.heartbeat`），不传递 `message.part.delta` 等会话内事件。Driver 采用以下双轨策略检测任务完成：
 
 - **SSE 轨道**：检测 `session.error`（快速失败）及权限请求
 - **REST 轮询轨道**：每 5 秒 `GET /session/{id}/message`，检查最后一条 assistant 消息的 `info.time.completed` 字段是否有值
 
-### opencode SSE 格式（1.14.30）
+### opencode SSE 格式（1.14.30 实测）
 
 实际格式（与旧版不同）：
 
@@ -275,7 +275,7 @@ VibeTradingOpenCodeWorker/
 │   ├── storage/             # SQLite 持久化
 │   └── workspace/           # 工作区准备（local / tarball / git）
 ├── docker/worker/
-│   ├── Dockerfile.arm64     # ARM64 沙箱镜像（opencode 1.14.30 原生）
+│   ├── Dockerfile.arm64     # ARM64 沙箱镜像（当前 pin: opencode 1.15.0）
 │   └── entrypoint.sh        # 容器入口（opencode serve --print-logs）
 ├── tests/e2e/
 │   └── test_tianqi_e2e.py   # 天齐锂业基本面分析 E2E 测试

@@ -1,10 +1,17 @@
 # ADR-006 — oh-my-openagent 版本 Pin 与运行时入口
 
+> **2026-05-16 fix 验证**：Worker 已修复 oh-my-openagent 加载链路。当前方案为：
+> 1. 在容器启动前把 `OPENCODE_CONFIG_CONTENT` 写入 `~/.config/opencode/opencode.json`；
+> 2. 使用 `"plugin": ["oh-my-openagent@latest"]`（单数 key，tag 而非精确 semver）；
+> 3. `/global/health` 通过后继续轮询 `/agent`，等待外部插件完成初始化。
+>
+> arm64 验证结果：`opencode 1.15.0` + `oh-my-openagent 4.1.2` 下，日志显示 `service=plugin path=oh-my-openagent@latest loading plugin`，`/agent` 在健康检查后第 12 秒返回包含 `Prometheus` / `Sisyphus` 的 agent 列表。
+
 | 字段 | 值 |
 |---|---|
-| **状态** | Accepted |
+| **状态** | Accepted（当前运行时已生效） |
 | **日期** | 2026-05-13 |
-| **关联 Spike** | Phase 0 Spike 1b（版本确认，已完成）；Spike 3（容器内验证，待完成） |
+| **关联 Spike** | Phase 0 Spike 1b（版本确认，已完成）；Spike 3（容器内验证，2026-05-16 完成） |
 | **关联 HITL** | H11（oh-my 版本 pin，本 ADR 收口） |
 
 ---
@@ -18,10 +25,10 @@ opencode 通过"plugin"机制加载 oh-my-openagent，使得 Prometheus/Sisyphus
 
 ### 包名澄清
 
-| npm 包名 | 用途 | 本机缓存版本 | npm latest（2026-05-13） |
+| npm 包名 | 用途 | 当前 pin | npm latest（2026-05-16） |
 |---|---|---|---|
-| `oh-my-openagent` | opencode **插件**，通过 opencode 插件配置加载 | `3.17.2`（~/.cache/opencode/packages/ ） | `4.1.1` |
-| `oh-my-opencode` | **CLI 工具**，用于 smoke test 和本机调试 | `3.17.5`（~/.npm/_npx/ ） | `4.1.1` |
+| `oh-my-openagent` | opencode **插件**，通过 opencode 插件配置加载 | `4.1.2`（install-based cache，含运行时依赖） | `4.1.2` |
+| `oh-my-opencode` | **CLI 工具**，用于 smoke test 和本机调试 | `4.1.2` | `4.1.2` |
 
 两者是不同 npm 包但随 oh-my 项目同步发版。Worker 运行时加载的是 `oh-my-openagent`（插件），不是 `oh-my-opencode`（CLI）。
 
@@ -41,37 +48,38 @@ opencode 通过"plugin"机制加载 oh-my-openagent，使得 Prometheus/Sisyphus
 
 ### 版本 Pin 策略
 
-**Dockerfile 中 pin `oh-my-openagent` 到 `3.17.2`（当前本机已验证版本）。**
+**Dockerfile 中 pin `oh-my-openagent` 到 `4.1.2`；运行时配置使用 `oh-my-openagent@latest` 插件入口。**
 
 ```dockerfile
-# opencode 插件配置（通过 OPENCODE_CONFIG_CONTENT 或 opencode.json）
-# "plugins": ["oh-my-openagent@3.17.2"]
+# opencode 插件配置（通过 OPENCODE_CONFIG_CONTENT 写入 opencode.json）
+# "plugin": ["oh-my-openagent@latest"]
 ```
 
 opencode 配置文件中的插件版本：
 
 ```json
 {
-  "plugins": ["oh-my-openagent@3.17.2"]
+  "plugin": ["oh-my-openagent@latest"]
 }
 ```
 
 理由：
-- `3.17.2` 是本机 opencode `1.14.30` 实测可用版本（Spike 1b server toast 显示 `OhMyOpenCode 3.17.2`）。
-- npm latest `4.1.1` 尚未与 opencode `1.14.30` 组合验证；升级需 Spike 3 容器构建 + smoke test 重跑。
-- 使用 `@latest` 会导致构建时版本漂移，无法复现。
+- `4.1.2` 是当前 npm latest，且已与 `opencode 1.15.0` 在 arm64 验证镜像中实测通过 `/agent` 加载检查。
+- `oh-my-openagent 4.1.2` 的发布包会在运行时引用 `zod` 等外部依赖，因此 cache 必须按 install-based 方式预置完整依赖树，而不能只拷贝包目录。
+- 配置入口使用 `@latest`，而**镜像制品**通过离线 cache pin 到 `4.1.2`，既兼容上游安装器生成的 plugin entry，也避免把精确 semver 写死到运行时 JSON 中。
 
 ### 升级路径
 
-1. Spike 3（容器镜像构建）时同步验证 `oh-my-openagent@4.1.1` + opencode `1.14.30` 组合。
-2. 通过 `oh-my-opencode doctor --status` 确认插件版本加载正常，smoke test（Prometheus + Sisyphus）通过。
-3. 验证通过后在 ADR-002 和本 ADR 追加记录，bump Dockerfile 版本到 `4.1.1`。
+1. 先更新离线制品：`opencode-linux-*` tgz 和 install-based 的 `oh-my-openagent-cache.tar.gz`。
+2. 重建镜像后验证两条日志：`service=plugin path=oh-my-openagent@latest loading plugin` 与 `verified oh-my-openagent agents loaded: Prometheus, Sisyphus`。
+3. 若新版本导致 `/agent` 就绪时间变化，优先调整 entrypoint 的轮询窗口，不要退回到内置 `plan` / `build` agent。
 
 ---
 
 ## 影响
 
-- Dockerfile 插件安装命令从 `oh-my-openagent@latest` 改为 `oh-my-openagent@3.17.2`（Phase 2 交付物）。
-- `OPENCODE_CONFIG_CONTENT` 中的 `plugins` 数组需使用精确版本号而非 `@latest`。
+- Dockerfile / dist 离线制品已升级到 `opencode 1.15.0` + `oh-my-openagent 4.1.2`。
+- Worker entrypoint 会先写 `opencode.json`，再等待 `/agent` 就绪；不能再把 `OPENCODE_CONFIG_CONTENT` 仅视为环境变量透传。
+- `OPENCODE_CONFIG_CONTENT` 中的插件数组 key 为 `plugin`（单数），值使用 `oh-my-openagent@latest`。
 - Worker adapter 的 agent routing 参数值：`"Prometheus"`（plan_first）、`"Sisyphus"`（ultrawork）——在 Spike 3 容器 smoke test 中随插件升级一并验证。
-- H11 正式收口：`3.17.2` 为当前 pin，`4.1.1` 升级路径已明确。
+- H11 正式收口：当前 pin 为 `4.1.2`，并已完成容器级验证。

@@ -4,7 +4,7 @@
 回归守护：避免 AGENT_PROMETHEUS / AGENT_SISYPHUS 退回到 opencode 内置
 "plan" / "build"。
 
-ADR-001 / ADR-006 + oh-my-openagent 3.17.2 要求：
+ADR-001 / ADR-006 + oh-my-openagent 4.1.2 要求：
     - plan_first 模式 → Prometheus（规划 agent，read-only 工具集）
     - direct_execute 模式 → Sisyphus（执行 agent，bash/write/edit/webfetch 全开）
 

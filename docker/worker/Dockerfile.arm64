@@ -5,7 +5,7 @@
 # 替代 ubuntu:24.04 基础镜像（后者仅有 AMD64 版本，需通过 QEMU 模拟）
 #
 # 包含：
-#   - opencode linux-arm64 自包含二进制（v1.14.30）
+#   - opencode linux-arm64 自包含二进制（v1.15.0）
 #   - oh-my-openagent 插件预缓存（架构无关的 JS bundle）
 #   - Python 3 + 量化分析包（duckdb, pandas, numpy, requests, httpx）
 #
@@ -41,11 +41,11 @@ RUN groupadd -g 1000 sandbox && \
     useradd -u 1000 -g 1000 -m -d /home/sandbox -s /bin/bash sandbox
 
 # ── 安装 opencode ARM64 自包含二进制 ─────────────────────────────────────────
-# opencode-linux-arm64.tar.gz 解包后为单个 opencode 可执行文件
-COPY docker/worker/dist/opencode-linux-arm64.tar.gz /tmp/opencode.tar.gz
-RUN tar xzf /tmp/opencode.tar.gz -C /tmp && \
-    install -m 0755 /tmp/opencode /usr/local/bin/opencode && \
-    rm -f /tmp/opencode.tar.gz /tmp/opencode
+# opencode-linux-arm64-1.15.0.tgz 由宿主机 npm pack 生成，含 package/bin/opencode
+COPY docker/worker/dist/opencode-linux-arm64-1.15.0.tgz /tmp/opencode.tgz
+RUN tar xzf /tmp/opencode.tgz -C /tmp && \
+    install -m 0755 /tmp/package/bin/opencode /usr/local/bin/opencode && \
+    rm -rf /tmp/opencode.tgz /tmp/package
 
 # ── 预置 oh-my-openagent 插件 cache（架构无关 JS bundle）────────────────────
 COPY docker/worker/dist/oh-my-openagent-cache.tar.gz /tmp/ohmy-cache.tar.gz

@@ -5,8 +5,8 @@
 # 包含：opencode 自包含二进制、oh-my-openagent 插件预缓存
 #
 # Pin 版本（更新时需同步更新 ADR-002 / ADR-006）：
-#   - opencode:        1.14.30（linux-x64 自包含二进制，无需 Node.js/Bun runtime）
-#   - oh-my-openagent: 3.17.2（Bun bundle，dist/index.js 已内联所有依赖）
+#   - opencode:        1.15.0（linux-x64 自包含二进制，无需 Node.js/Bun runtime）
+#   - oh-my-openagent: 4.1.2（运行时依赖随 cache 一并预置）
 #
 # 安全设计：
 #   - 非 root 用户（uid 1000，gid 1000，username: sandbox）
@@ -16,8 +16,8 @@
 #   - OPENCODE_DISABLE_AUTOUPDATE=1（ENV 双层保障）
 #
 # 构建材料（需预先在宿主机准备，见 docker/worker/dist/README.md）：
-#   docker/worker/dist/opencode-linux-x64-1.14.30.tgz   # 49MB，linux-x64 二进制
-#   docker/worker/dist/oh-my-openagent-cache.tar.gz      # 3MB，插件 cache 结构
+#   docker/worker/dist/opencode-linux-x64-1.15.0.tgz    # 52MB，linux-x64 二进制
+#   docker/worker/dist/oh-my-openagent-cache.tar.gz     # 运行时插件 cache（含依赖）
 #
 # 构建命令（本机开发，ubuntu:24.04 须已 docker load）：
 #   docker build -t worker-sandbox:dev --platform linux/amd64 \
@@ -44,8 +44,8 @@ RUN usermod -l sandbox ubuntu && \
     usermod -s /bin/bash sandbox
 
 # ── 安装 opencode（linux-x64 自包含二进制，无需 Bun/Node runtime）────────────
-# opencode-linux-x64-1.14.30.tgz 由宿主机 npm pack 生成，含 bin/opencode 二进制
-COPY docker/worker/dist/opencode-linux-x64-1.14.30.tgz /tmp/opencode.tgz
+# opencode-linux-x64-1.15.0.tgz 由宿主机 npm pack 生成，含 bin/opencode 二进制
+COPY docker/worker/dist/opencode-linux-x64-1.15.0.tgz /tmp/opencode.tgz
 RUN tar xzf /tmp/opencode.tgz -C /tmp && \
     install -m 0755 /tmp/package/bin/opencode /usr/local/bin/opencode && \
     rm -rf /tmp/opencode.tgz /tmp/package

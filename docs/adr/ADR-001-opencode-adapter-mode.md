@@ -2,10 +2,34 @@
 
 | 字段 | 值 |
 |---|---|
-| **状态** | Accepted |
+| **状态** | Accepted（当前运行时已恢复 `Prometheus` / `Sisyphus` 路由；2026-05-14 的 `plan` / `build` fallback 仅保留为历史记录） |
 | **日期** | 2026-05-13 |
+| **更新日期** | 2026-05-16（修复插件加载链路，arm64 容器内验证恢复 Prometheus / Sisyphus） |
 | **关联 Spike** | Phase 0 Spike 1a（endpoint spike）、oh-my smoke tests |
 | **关联 HITL** | H12（plan_first 主入口，部分收口） |
+
+---
+
+## 当前实现状态（2026-05-16 fix 验证）
+
+- Worker 现在会在容器启动前把 `OPENCODE_CONFIG_CONTENT` materialize 到 `~/.config/opencode/opencode.json`，不再只依赖环境变量传递。
+- `docker/worker/entrypoint.sh` 在 `/global/health` 成功后会继续轮询 `/agent` 最多 30 秒，避免 oh-my-openagent 延迟初始化导致误判失败。
+- 2026-05-16 arm64 镜像验证：`opencode 1.15.0` + `oh-my-openagent 4.1.2` 下，日志显示 `service=plugin path=oh-my-openagent@latest loading plugin`，`/agent` 在健康检查后第 12 秒返回包含 `Prometheus` / `Sisyphus` 的 agent 列表。
+- 因此本 ADR 的原始决策重新成为**当前事实**：Worker 运行时走 HTTP Server + `agent: "Prometheus" / "Sisyphus"`，不再以 `plan` / `build` 作为 MVP fallback。
+
+## 历史实现状态（2026-05-14 review 校准）
+
+> 详见 [code-review-2026-05-14.md](../code-review-2026-05-14.md) P0-5。
+
+- **容器内 `GET /agent` 实测返回**：`build / compaction / explore / general / plan / summary / title` —— **全部为 opencode 1.14.30 内置 agent**，没有 oh-my-openagent 暴露的 `Prometheus` / `Sisyphus`。
+- **opencode 启动日志中加载的 plugin** 都是内置混淆名（`EJ / bJ / Px / dI / kx / gx`），未见 `oh-my-openagent`。
+- 镜像里 oh-my-openagent 3.17.2 包文件确实存在于 `/home/sandbox/.cache/opencode/packages/oh-my-openagent@latest/node_modules/oh-my-openagent/`，但 opencode 没有自动激活它（缺少显式 plugin 声明或加载路径不对）。
+- **历史临时决策（2026-05-14）**：Worker driver 曾短暂使用 opencode 内置 `plan` / `build` agent，分别承担 plan_first / direct_execute 角色。该 fallback 已在 2026-05-16 随插件加载链路修复而废止。
+
+> ⚠️ 本节保留为 2026-05-14 排查记录。最终落地方案不是全局安装，也不是 doctor 预热，而是：
+> 1. 在容器里显式写入 `~/.config/opencode/opencode.json`；
+> 2. 使用 `"plugin": ["oh-my-openagent@latest"]`（单数 key）；
+> 3. 将 `/agent` 校验改为带重试的延迟就绪检查。
 
 ---
 
@@ -114,4 +138,4 @@ Worker:
 - **Phase 3/4 合并**：roadmap 将 Phase 4 条目合并进 Phase 3，统一为 "OpenCode HTTP Server Adapter（含 oh-my agent routing）"。
 - **Spike 2 取消**：Phase 0 Spike 2 从计划中移除。
 - **H12 部分收口**：`plan_first` 主入口确认为 HTTP Server + `agent: "Prometheus"`；`/start-work` slash command spike 降级为可选验证，不阻塞 MVP 实现。
-- **H11 仍待确认**：oh-my 版本 pin（`3.17.5` vs `4.1.0`），在容器 Spike 3 时决定。
+- **H11 已收口**：当前版本 pin 为 `oh-my-openagent 4.1.2` / `oh-my-opencode 4.1.2`，并已完成 arm64 容器验证。

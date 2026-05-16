@@ -4,9 +4,9 @@
 |---|---|
 | **状态** | Accepted |
 | **日期** | 2026-05-13 |
-| **更新日期** | 2026-05-14（Phase 2.5 镜像构建验证完成） |
+| **更新日期** | 2026-05-16（升级到 opencode 1.15.0 / oh-my-openagent 4.1.2，并验证插件加载恢复） |
 | **关联 Spike** | Phase 0 Spike 3（镜像构建验证，✅ Phase 2.5 已完成） |
-| **关联 HITL** | H2（镜像分发与签名），H11（oh-my 版本 pin，✅ 已确认 3.17.2） |
+| **关联 HITL** | H2（镜像分发与签名），H11（oh-my 版本 pin，✅ 已升级到 4.1.2） |
 
 ---
 
@@ -32,17 +32,17 @@ Worker 需要一个可重现、版本可 pin 的容器镜像，内含 opencode +
 | 组件 | Pin 方式 | 已 pin 版本 | 验证证据 |
 |---|---|---|---|
 | 基础镜像 | 本地预置 | `ubuntu:24.04`（Image ID: `e0f16e6366fe`） | `docker images ubuntu:24.04`，2026-05-13 |
-| opencode | 宿主机 `npm pack` + `COPY` 离线安装 | `1.14.30`（linux-x64 自包含二进制） | `docker run ... opencode --version` → `1.14.30`，2026-05-14 |
-| oh-my-openagent plugin | 宿主机 `npm pack` + `COPY` 离线缓存 | `3.17.2`（Bun bundle，dist/index.js 完全内联） | 镜像内 `ls ~/.cache/opencode/packages/oh-my-openagent@latest/` 结构验证，2026-05-14 |
+| opencode | 宿主机 `npm pack` + `COPY` 离线安装 | `1.15.0`（linux-x64 / linux-arm64 自包含二进制） | arm64 验证镜像日志 `version=1.15.0`，2026-05-16 |
+| oh-my-openagent plugin | install-based cache + `COPY` 离线缓存 | `4.1.2`（需连同 `zod` 等运行时依赖一起打包） | arm64 验证镜像日志 `service=plugin path=oh-my-openagent@latest loading plugin`，`/agent` ready after 12s，2026-05-16 |
 | stdio MCP 二进制 | 按需在 Phase 3+ 添加 | — | — |
 
 **离线构建材料准备方式**（宿主机执行，无 Dockerfile 网络依赖）：
 ```bash
-# opencode linux-x64 自包含二进制（49MB）
-npm pack opencode-linux-x64@1.14.30
-# oh-my-openagent 插件 cache 包（3MB，含完整 Bun bundle）
-npm pack oh-my-openagent@3.17.2
-# 构建 cache 结构 tar，解压后得 oh-my-openagent@latest/node_modules/oh-my-openagent/
+# opencode linux-x64 / linux-arm64 自包含二进制
+npm pack opencode-linux-x64@1.15.0 --registry=https://registry.npmjs.org
+npm pack opencode-linux-arm64@1.15.0 --registry=https://registry.npmjs.org
+# oh-my-openagent 4.1.2 不再是纯自包含 bundle，cache 必须包含完整运行时依赖
+npm install --registry=https://registry.npmjs.org --omit=dev --omit=optional --ignore-scripts oh-my-openagent@4.1.2
 ```
 详见 `docker/worker/dist/README.md`。
 
