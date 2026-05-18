@@ -199,6 +199,8 @@ async def insert_event(
 
     P1-10：通过 per-task `asyncio.Lock` 串行化 SELECT MAX + INSERT，
     避免同任务并发协程撞 UNIQUE(task_id, event_id) 约束。
+
+    P1-12：写入成功后唤醒 SSE 订阅者（事件驱动推送，替代 0.5s 轮询）。
     """
     lock = _get_event_lock(task_id)
     async with lock:
@@ -213,6 +215,11 @@ async def insert_event(
             (event_id, task_id, kind.value, payload_json, now),
         )
         await db.commit()
+
+    # P1-12：通知 SSE 订阅者（在锁外避免 wakeup 竞争 lock 重入）
+    from worker.orchestrator import event_bus
+    event_bus.notify(task_id)
+
     return TaskEvent(event_id=event_id, task_id=task_id, kind=kind,
                      payload=payload or {}, ts=now, cursor=event_id)
 

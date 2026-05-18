@@ -212,12 +212,16 @@ async def task_events(task_id: str, request: Request):
     async def event_generator() -> AsyncIterator[dict]:
         """生成 SSE 事件的异步生成器。
 
-        先补发历史事件，再实时等待新事件或 heartbeat。
+        先补发历史事件，再事件驱动地等待新事件或 heartbeat。
         遇到终态事件或客户端断开时退出。
+
+        P1-12：实时推送阶段使用 `event_bus.subscribe()` 拿到专属唤醒 Event，
+        replace 0.5s 轮询为 `asyncio.wait_for(sub.wait(), timeout=heartbeat)`。
+        新事件 → < 1ms 唤醒；无事件 → heartbeat 间隔到时唤醒发心跳。
         """
+        from worker.orchestrator import event_bus
+
         cursor = last_cursor
-        # 等待新事件时的轮询间隔（秒）
-        poll_interval = 0.5
 
         # 先检查任务是否已终结——若已终结则直接补发全部历史后关闭
         already_terminal = task.status in {
@@ -225,48 +229,67 @@ async def task_events(task_id: str, request: Request):
             TaskStatus.aborted, TaskStatus.timed_out,
         }
 
-        # 补发历史事件（event_id > cursor 的部分）
-        history = await get_events_after(db, task_id, cursor)
-        for ev in history:
-            # 检查客户端是否已断开
-            if await request.is_disconnected():
-                logger.debug("SSE client disconnected during history replay: %s", task_id)
-                return
-            cursor = ev.cursor
-            yield _sse_dict(ev)
-            # 若补发到终态事件则关闭
-            if ev.kind in TERMINAL_EVENT_KINDS:
-                return
+        # P1-12：在 history replay 之前先订阅，避免 replay 与新事件之间的窗口期
+        # 错过 notify（即便错过，下次 heartbeat 仍会重新拉 DB 兜底）
+        bus = event_bus.get_bus(task_id)
+        subscriber = bus.subscribe()
 
-        # 若任务已终结且历史已全部补发，关闭
-        if already_terminal:
-            return
-
-        # 实时推送阶段：轮询 DB + 定时 heartbeat
-        last_heartbeat = time.monotonic()
-        while True:
-            if await request.is_disconnected():
-                logger.debug("SSE client disconnected: %s", task_id)
-                return
-
-            # 检查是否有新事件
-            new_events = await get_events_after(db, task_id, cursor)
-            for ev in new_events:
+        try:
+            # 补发历史事件（event_id > cursor 的部分）
+            history = await get_events_after(db, task_id, cursor)
+            for ev in history:
+                # 检查客户端是否已断开
+                if await request.is_disconnected():
+                    logger.debug("SSE client disconnected during history replay: %s", task_id)
+                    return
                 cursor = ev.cursor
                 yield _sse_dict(ev)
+                # 若补发到终态事件则关闭
                 if ev.kind in TERMINAL_EVENT_KINDS:
                     return
 
-            # 是否需要发 heartbeat
-            now = time.monotonic()
-            if now - last_heartbeat >= heartbeat_interval:
-                yield {
-                    "event": "heartbeat",
-                    "data": json.dumps({"ts": time.time()}),
-                }
-                last_heartbeat = now
+            # 若任务已终结且历史已全部补发，关闭
+            if already_terminal:
+                return
 
-            await asyncio.sleep(poll_interval)
+            # 实时推送阶段：事件驱动唤醒 + 定时 heartbeat 兜底
+            last_heartbeat = time.monotonic()
+            while True:
+                if await request.is_disconnected():
+                    logger.debug("SSE client disconnected: %s", task_id)
+                    return
+
+                # 检查是否有新事件
+                new_events = await get_events_after(db, task_id, cursor)
+                for ev in new_events:
+                    cursor = ev.cursor
+                    yield _sse_dict(ev)
+                    if ev.kind in TERMINAL_EVENT_KINDS:
+                        return
+
+                # 是否需要发 heartbeat
+                now = time.monotonic()
+                next_heartbeat_in = heartbeat_interval - (now - last_heartbeat)
+                if next_heartbeat_in <= 0:
+                    yield {
+                        "event": "heartbeat",
+                        "data": json.dumps({"ts": time.time()}),
+                    }
+                    last_heartbeat = now
+                    next_heartbeat_in = heartbeat_interval
+
+                # P1-12：等待 notify 或下次 heartbeat 到期
+                # notify 来自 repo.insert_event 的 event_bus.notify(task_id)
+                try:
+                    await asyncio.wait_for(
+                        subscriber.wait(), timeout=next_heartbeat_in,
+                    )
+                    subscriber.clear()
+                except asyncio.TimeoutError:
+                    # heartbeat 兜底兜醒，下个循环检测并发心跳
+                    pass
+        finally:
+            bus.unsubscribe(subscriber)
 
     return EventSourceResponse(event_generator())
 

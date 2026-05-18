@@ -29,6 +29,7 @@ from worker.contract.event import TaskEventKind
 from worker.contract.exceptions import TaskAbortedError, TaskTimedOutError
 from worker.contract.task import TaskStatus
 from worker.observability import metrics
+from worker.orchestrator import event_bus
 from worker.storage.db import get_db
 from worker.storage.repo import discard_task_locks, insert_event, update_task_status
 
@@ -192,6 +193,8 @@ async def _run_one(task_id: str) -> None:
             discard_task_locks(task_id)
             # P1-11：退出活跃槽位
             metrics.dec_active_tasks()
+            # P1-12：释放 SSE 总线条目（残留订阅者会从终态事件自然退出）
+            event_bus.discard(task_id)
 
 
 async def _write_terminal(

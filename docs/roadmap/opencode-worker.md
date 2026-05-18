@@ -11,7 +11,7 @@
 >   - ✅ **2026-05-16 修订**：P0-5 / P0-6 / P0-7 已修复；agent 恢复为 `Prometheus` / `Sisyphus`，timeout / abort 终态分别落为 `task_timed_out` / `task_aborted`。
 > - ✅ **Phase 5 — 已归档**：HITL 闭环、超时事件、mode escalation、断线重连。
 >   - ✅ **2026-05-16 修订**：P1-13 已修复；`on_timeout="continue|escalate"` 超时后不再误入 abort/failure 路径。
->   - ⚠️ `auto_approve` 字段仍未实现（P1-14）。
+>   - ✅ **2026-05-18 修订**：P1-14 已修复；`HitlPolicy.auto_approve` 通过 fnmatch 匹配 `<kind>:<tool>` 短路 HITL。
 > - 🟡 **Phase 6 — 部分完成，待收尾**：metrics / logging 框架已就位，metrics callsites 已于 2026-05-18 接入（P1-11 closed）；集成测试套与安全回归脚本待自动化。
 > - ⬜ **Phase 7** — 规划中（多租户 / 加密 / 跨节点等）。
 >
@@ -302,7 +302,7 @@ pending
 >
 > **Review 警示（见 [code-review-2026-05-14.md](../code-review-2026-05-14.md)）**：
 > - `[REVIEW: P1-13]` `HitlPolicy.on_timeout="continue"` / `"escalate"` 路径未实现，仅识别 `"abort"`；schema 定义与实际行为不一致。该项已于 2026-05-16 修复：超时时统一归一化为 `approve` fallback，并保留 `hitl_timeout` 事件通知上游。
-> - `[REVIEW: P1-14]` `HitlPolicy.auto_approve` 字段未实现，driver 完全不查；配置生效与否对用户为黑盒。
+> - `[REVIEW: P1-14]` ✅ 已于 2026-05-18 修复：`_match_auto_approve` + `_auto_approve_permission` 实装，fnmatch 模式匹配命中即跳 HITL。
 > - `[REVIEW: P1-10]` `_next_event_id` 在并发写入下存在 UNIQUE 冲突 race；driver 的 `_consume_sse` 与 `_handle_permission` 并发场景下会触发。
 
 **主要交付**：统一 DecisionRequest（plan approval/tool permission/file write/broker egress/long-task continue）；HITL 超时 `default_on_timeout=abort`（`hitl_timeout` 事件 + `expire_decision` DB + abort + 容器 stop）；SSE `Last-Event-ID` 断线续传；Decision 幂等；`mode_escalation_suggested`（权限请求 ≥3 次触发）；重启后孤儿任务标 `failed(orphaned)`（commit fbaa13b）。
@@ -314,9 +314,9 @@ pending
 > **状态：🟡 部分完成，待收尾**
 >
 > **Review 警示（见 [code-review-2026-05-14.md](../code-review-2026-05-14.md)）**：
-> - `[REVIEW: P1-11]` Metrics helper（`inc_task_count` / `observe_task_duration` 等）全仓 0 个 callsite，`/metrics` 端点格式正确但永远空。Phase 6 退出检查的"counter 接入"实质未达成。
-> - `[REVIEW: P1-9]` SQLite WAL 模式注释/路线图均承诺已启用，但 `init_db` 实际未执行 `PRAGMA journal_mode=WAL`。
-> - `[REVIEW: P1-12]` SSE 实时推送是 0.5s polling 而非事件驱动；MVP 可接受但属于已知性能瓶颈。
+> - `[REVIEW: P1-11]` ✅ 已于 2026-05-18 修复：queue / sandbox / driver callsites 全部接入。
+> - `[REVIEW: P1-9]` ✅ 已于 2026-05-18 修复：`init_db` 启用 WAL + synchronous=NORMAL + busy_timeout=5000。
+> - `[REVIEW: P1-12]` ✅ 已于 2026-05-18 修复：`worker.orchestrator.event_bus` 替代 0.5s 轮询，新事件 < 1ms 唤醒。
 > - 集成测试（HITL 时序、安全回归脚本化）仍 pending；现仅有 `tests/fixtures/stub_opencode_server.py` 但未串到 integration 用例。
 
 - [x] 测试矩阵：
@@ -338,7 +338,7 @@ pending
   - 升级 playbook（spike → ADR → bump → 回归）。
 
 Phase 6 退出检查：
-- [x] 单元测试 41/41 通过（pytest tests/unit/）。
+- [x] 单元测试 118/118 通过（pytest tests/unit/）。
 - [x] Prometheus /metrics 端点**格式**以 text/plain; version=0.0.4 响应。
 - [x] **Metrics counter 接入** — `[REVIEW: P1-11]` 已于 2026-05-18 修复：queue / sandbox / driver 关键路径全部接入 counter / summary。
 - [x] 结构化日志 correlation filter 通过语法检查 + 模块导入验证。
@@ -419,9 +419,9 @@ Phase 6 退出检查：
 | P1-9 | SQLite WAL pragma 承诺未执行 | ✅ 已于 2026-05-18 修复：`init_db` 启用 `journal_mode=WAL` + `synchronous=NORMAL` + `busy_timeout=5000`；测试 [test_db_wal.py](../../tests/unit/test_db_wal.py) 覆盖 |
 | P1-10 | `_next_event_id` 并发 UNIQUE 冲突 race | ✅ 已于 2026-05-18 修复：per-task `asyncio.Lock` 串行化 SELECT MAX + INSERT；`queue._run_one` 终态后 `discard_task_locks` 释放；测试 [test_event_id_race.py](../../tests/unit/test_event_id_race.py) 覆盖 |
 | P1-11 | metrics helper 全仓 0 callsite，`/metrics` 永远空 | ✅ 已于 2026-05-18 修复：queue（active/count/duration/abort_reason）、sandbox（container_start_ms）、driver（hitl_wait_seconds）callsites 全部接入；测试 [test_metrics_wiring.py](../../tests/unit/test_metrics_wiring.py) 覆盖 |
-| P1-12 | SSE 实时推送是 0.5s polling 而非事件驱动 | asyncio.Event 替换 sleep 轮询 |
+| P1-12 | SSE 实时推送是 0.5s polling 而非事件驱动 | ✅ 已于 2026-05-18 修复：`worker.orchestrator.event_bus` 提供 per-task 订阅者唤醒；`insert_event` 写库后 notify，SSE handler 用 `wait_for(sub.wait())` 替代 polling；测试 [test_sse_event_bus.py](../../tests/unit/test_sse_event_bus.py) 覆盖 |
 | P1-13 | `on_timeout="continue"`/`"escalate"` 路径未实现 | 已于 2026-05-16 修复：driver 统一归一化 continue/escalate timeout fallback |
-| P1-14 | `auto_approve` 字段 driver 完全不查 | driver 读取字段，自动通过低风险决策 |
+| P1-14 | `auto_approve` 字段 driver 完全不查 | ✅ 已于 2026-05-18 修复：`_match_auto_approve` 用 fnmatch 匹配 `<DecisionKind>:<tool>` 模式（支持 `*` 通配），命中即跳 HITL 直接 respond "once" 并写 `decision_received(auto_approved=True)`；测试 [test_auto_approve.py](../../tests/unit/test_auto_approve.py) 覆盖 |
 | P1-15 | `reject` 无计数上限，极端场景死循环 | ✅ 已于 2026-05-18 修复：driver `_REJECT_THRESHOLD=3` + `self._reject_count`，达阈值发 `mode_escalation_suggested` + `_signal_abort`；approve 重置；测试 [test_reject_threshold.py](../../tests/unit/test_reject_threshold.py) 覆盖 |
 | P1-16 | 状态机无效转换未拒绝 | `transition()` 加合法前置状态校验 |
 | P1-17 | `task_queued` 在 queue 满时未发出 | queue 满路径补发 `task_queued` 事件 |

@@ -30,7 +30,7 @@
 | P0-6 | 补充 `task_timed_out` 事件类型，driver 走正确分支 | 超时被错转为 `task_failed`，影响降级判断 | 0.5 day |
 | P0-7 | HITL abort 路径写 `task_aborted` 而非 `task_failed` | 终态混淆，影响 audit | 0.5 day |
 | P1-13 | HITL `on_timeout="continue"` / `"escalate"` 全分支实装 | 当前仅识别 `abort`，与 schema 不一致 | 1 day |
-| P1-14 | HITL `auto_approve` 字段实装 | driver 不查，配置生效与否对用户为黑盒 | 1 day |
+| P1-14 | HITL `auto_approve` 字段实装（✅ 已于 2026-05-18 修复） | driver 不查，配置生效与否对用户为黑盒 | 1 day |
 
 **优先级 P1：Phase 6 SSE Hooks（design §5.3）**
 
@@ -45,7 +45,7 @@
 
 来自 [docs/code-review-2026-05-14.md](../code-review-2026-05-14.md) 的 P1 列表：P1-9（WAL pragma）/ P1-10（event_id race）/ P1-11（metrics callsite）/ P1-12（SSE polling）/ P1-15（reject 死循环）/ P1-16~19。约 1 周工作量。
 
-> **2026-05-18 进度**：已完成最小可上线集合 — P1-9 / P1-10 / P1-11 / P1-15 / P1-17。详情见 [docs/code-review-2026-05-14.md](../code-review-2026-05-14.md) 各项的"修订"块。剩余 P1-12（SSE polling）/ P1-14（auto_approve）/ P1-16（状态双写）/ P1-18（workspace 残留）/ P1-19（artifact GC）待后续 sprint。
+> **2026-05-18 进度**：已完成 P1-9 / P1-10 / P1-11 / P1-12 / P1-14 / P1-15 / P1-17（含本批 P1-12 SSE 事件驱动 + P1-14 auto_approve）。详情见 [docs/code-review-2026-05-14.md](../code-review-2026-05-14.md) 各项的"修订"块。剩余 P1-16（状态双写）/ P1-18（workspace 残留）/ P1-19（artifact GC）+ P1-20 README 微调待后续 sprint。
 
 ---
 

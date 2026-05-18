@@ -36,7 +36,7 @@
 | Phase 2 | Docker Sandbox + Workspace（broker 进程启停 / CONNECT 隧道见 ⚠️ 安全模型说明）| ✅ 完成 |
 | Phase 3 | OpenCode HTTP Adapter + HITL 接入（E2E 跑通）| ✅ 完成 |
 | Phase 5 | HITL 闭环、超时事件、断线重连 | ✅ 完成 |
-| Phase 6 | 可观测性（metrics 计数器接入待补）+ 集成测试 | 🟡 部分完成 |
+| Phase 6 | 可观测性（metrics callsites 已接入 P1-11）+ 集成测试套自动化（待补）| 🟡 部分完成 |
 | Phase 7 | 多租户 / 加密 / 跨节点调度 / **broker 出口代理完整实现** | ⬜ 规划中 |
 
 详细路线图见 [docs/roadmap/opencode-worker.md](docs/roadmap/opencode-worker.md)，最近一次全量 code review：[docs/code-review-2026-05-14.md](docs/code-review-2026-05-14.md)。

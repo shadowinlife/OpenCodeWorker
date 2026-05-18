@@ -111,6 +111,8 @@
 - **现状**：每 task × 每订阅者 0.5s 一次 DB SELECT。
 - **方向**：进程内 `asyncio.Queue/Event` 广播器；当前 MVP 可接受但建议 Phase 6 内消化。
 
+> **2026-05-18 修订**：该项已修复。新增 [src/worker/orchestrator/event_bus.py](../src/worker/orchestrator/event_bus.py)，per-task `TaskEventBus` 维护订阅者 `asyncio.Event` 列表。`repo.insert_event` 写库后调用 `event_bus.notify(task_id)` 唤醒所有订阅者；`routes.py` SSE handler 用 `asyncio.wait_for(sub.wait(), timeout=heartbeat)` 替代 0.5s 轮询，新事件 < 1ms 唤醒，无事件按 heartbeat 间隔兜底。`queue._run_one` 终态后 `event_bus.discard(task_id)` 清理。新增 [tests/unit/test_sse_event_bus.py](../tests/unit/test_sse_event_bus.py) 9 用例（subscribe/notify/clear/unsubscribe/discard/end-to-end/多订阅者），全部通过。
+
 ### P1-13 `HitlPolicy.on_timeout="continue"`/`"escalate"` 路径未实现
 - **位置**：[src/worker/adapters/opencode/driver.py:471-486](../src/worker/adapters/opencode/driver.py#L471-L486)、[driver.py:568-576](../src/worker/adapters/opencode/driver.py#L568-L576)
 - **问题**：仅识别 `"abort"`，其它字符串走 default else，导致 `_abort_event` 不触发但 `choice_val` 又不是 `approve` → plan 路径必抛 RuntimeError。
@@ -122,6 +124,8 @@
 - **位置**：[src/worker/contract/task.py:278-286](../src/worker/contract/task.py#L278-L286)
 - **问题**：driver 完全不消费，配置是否生效对用户而言是黑盒。
 - **方向**：在 `_handle_permission` 起手处先匹配 auto_approve list；或先从 schema 删除直到实现。
+
+> **2026-05-18 修订**：该项已修复。driver 新增 `_match_auto_approve(kind, context_key)` 使用 fnmatch 匹配 `<DecisionKind>:<context_key>` 形式 pattern（支持 `*` 通配符），命中时 `_auto_approve_permission` 直接 respond opencode "once" + 写 `decision_received`（`auto_approved=True` + `matched_pattern` 字段便于审计），跳过 hitl_required / awaiting_human / DB decisions 全流程。auto-approve 视同 user approve，重置 reject 计数。新增 [tests/unit/test_auto_approve.py](../tests/unit/test_auto_approve.py) 9 用例（精确匹配 / 通配符 `*` / 前缀通配 / 首匹配返回 / 空策略 / 端到端跳过 HITL / 未命中 fallback / reset reject / 默认空配置），全部通过。
 
 ### P1-15 opencode `respond_permission="reject"` 可能导致死循环
 - **位置**：[src/worker/adapters/opencode/driver.py:457-503](../src/worker/adapters/opencode/driver.py#L457-L503)
@@ -156,6 +160,8 @@
 - **位置**：[README.md](../README.md)
 - **问题**：README §当前状态写 Phase 1 进行中、Phase 2 待开始；Roadmap 里 Phase 2/3/5/6 大部分 ✅。
 - **方向**：本 review 同步修正 README（见单独提交）。
+
+> **2026-05-18 修订**：该项已修复。Phase 1~5 状态行已同步为 ✅；Phase 6 行从"metrics 计数器接入待补"更新为"metrics callsites 已接入 P1-11"，以反映 2026-05-18 commit 2d2298a + 后续 P1-12/P1-14 修复后的真实状态。
 
 ---
 

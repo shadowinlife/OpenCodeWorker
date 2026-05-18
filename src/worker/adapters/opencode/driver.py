@@ -21,6 +21,7 @@ OpenCode Task Driver — Phase 3 核心实现。
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import logging
 import time
@@ -437,6 +438,18 @@ class OpenCodeDriver:
         permission_id = perm_req["permission_id"]
         tool = perm_req.get("tool", "unknown")
 
+        # P1-14：auto_approve 短路——若 hitl_policy.auto_approve 命中此 kind:tool，
+        # 直接 respond "once" 并写 decision_received（auto_approved=True），
+        # 跳过 hitl_required / awaiting_human 全流程
+        matched_pattern = self._match_auto_approve(
+            DecisionKind.tool_permission, tool,
+        )
+        if matched_pattern is not None:
+            await self._auto_approve_permission(
+                session_id, permission_id, tool, matched_pattern,
+            )
+            return
+
         hitl_policy = self.request.hitl_policy
         timeout_sec = hitl_policy.decision_timeout_sec if hitl_policy else 600
         on_timeout_action, default_timeout_choice = self._resolve_hitl_timeout_policy()
@@ -811,6 +824,70 @@ class OpenCodeDriver:
             self._abort_reason = reason
             self._abort_decision_id = decision_id
         self._abort_event.set()
+
+    # ── P1-14: HITL auto_approve ────────────────────────────────────────────
+
+    def _match_auto_approve(
+        self, kind: DecisionKind, context_key: str,
+    ) -> Optional[str]:
+        """检查 (kind, context_key) 是否命中 hitl_policy.auto_approve。
+
+        匹配格式：`<DecisionKind>:<context_key>`，支持 fnmatch 通配符
+        （`?` / `*`）。例如：
+            - "tool_permission:read_file"  → 仅 tool=read_file
+            - "tool_permission:*"          → 任意 tool_permission
+            - "tool_permission:read*"      → tool 以 read 开头
+
+        Returns:
+            首个命中的 pattern 字符串；无匹配返回 None。
+        """
+        policy = self.request.hitl_policy
+        if not policy or not policy.auto_approve:
+            return None
+        target = f"{kind.value}:{context_key}"
+        for pattern in policy.auto_approve:
+            if fnmatch.fnmatch(target, pattern):
+                return pattern
+        return None
+
+    async def _auto_approve_permission(
+        self,
+        session_id: str,
+        permission_id: str,
+        tool: str,
+        matched_pattern: str,
+    ) -> None:
+        """auto_approve 短路：直接回 opencode "once" + 写 decision_received。
+
+        P1-14：跳过 hitl_required / awaiting_human / decision DB 流程。
+        审计可通过 decision_received 事件的 `auto_approved=True` +
+        `matched_pattern` 字段重建路径。
+        """
+        decision_id = str(uuid.uuid4())
+        logger.info(
+            "task %s: auto-approved permission %s (tool=%s, pattern=%s)",
+            self.task_id, permission_id, tool, matched_pattern,
+        )
+        await insert_event(
+            self.db, self.task_id, TaskEventKind.decision_received,
+            {
+                "decision_id": decision_id,
+                "choice": "once",
+                "permission_id": permission_id,
+                "auto_approved": True,
+                "matched_pattern": matched_pattern,
+                "tool": tool,
+            },
+        )
+        # auto-approve 等价于用户 approve，重置 reject 计数
+        self._reject_count = 0
+        try:
+            await self.client.respond_permission(session_id, permission_id, "once")
+        except Exception as exc:
+            logger.warning(
+                "task %s: auto-approve respond_permission %s failed: %s",
+                self.task_id, permission_id, exc,
+            )
 
     def _resolve_hitl_timeout_policy(self) -> tuple[str, DecisionChoice]:
         """将 HitlPolicy.on_timeout 解析为规范动作及超时默认决策。
