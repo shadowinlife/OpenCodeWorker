@@ -448,3 +448,35 @@ async def get_artifact_path(
     ) as cur:
         row = await cur.fetchone()
     return row["file_path"] if row else None
+
+
+async def select_expired_artifacts(
+    db: aiosqlite.Connection,
+    before: float,
+    limit: int,
+) -> list[tuple[str, Optional[str]]]:
+    # [REVIEW: P1-19] artifact GC 扫描入口：按 expires_at 升序取最早过期的批。
+    # NULL expires_at 视作永不过期（如手工注入的元数据），不参与清理。
+    async with db.execute(
+        """
+        SELECT id, file_path FROM artifacts
+        WHERE expires_at IS NOT NULL AND expires_at <= ?
+        ORDER BY expires_at ASC
+        LIMIT ?
+        """,
+        (before, limit),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [(row["id"], row["file_path"]) for row in rows]
+
+
+async def delete_artifact_row(
+    db: aiosqlite.Connection,
+    artifact_id: str,
+) -> bool:
+    cur = await db.execute(
+        "DELETE FROM artifacts WHERE id = ?",
+        (artifact_id,),
+    )
+    await db.commit()
+    return cur.rowcount > 0

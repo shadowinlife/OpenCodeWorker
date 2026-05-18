@@ -35,6 +35,9 @@ _abort_count: dict[str, int] = defaultdict(int)
 # Counter：token_usage_total{direction}
 _token_usage: dict[str, int] = defaultdict(int)
 
+# Counter：artifact_gc_deleted_total{result}  — P1-19 GC 删除计数
+_artifact_gc_deleted: dict[str, int] = defaultdict(int)
+
 # Gauge：active_tasks
 _active_tasks: int = 0
 
@@ -63,6 +66,11 @@ def inc_abort_count(reason: str = "unknown") -> None:
 def add_token_usage(direction: str, count: int) -> None:
     """累加 token 使用量。direction: 'input' | 'output'。"""
     _token_usage[direction] += count
+
+
+def inc_artifact_gc_deleted(result: str = "ok") -> None:
+    """artifact GC 删除一行 +1。result: 'ok' | 'missing_file' | 'error'。"""
+    _artifact_gc_deleted[result] += 1
 
 
 def set_active_tasks(n: int) -> None:
@@ -146,6 +154,13 @@ def render_prometheus() -> str:
         "worker_token_usage_total",
         "Total LLM tokens used.",
         {f'direction="{k}"': v for k, v in _token_usage.items()},
+    )
+
+    # artifact_gc_deleted
+    _counter(
+        "worker_artifact_gc_deleted_total",
+        "Artifacts deleted by GC, by result.",
+        {f'result="{k}"': v for k, v in _artifact_gc_deleted.items()},
     )
 
     # active_tasks

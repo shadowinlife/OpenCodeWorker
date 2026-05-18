@@ -113,6 +113,11 @@ async def lifespan(app: FastAPI):
     queue_task = await start_queue_worker()
     logger.info("queue worker started")
 
+    # P1-19：启动 artifact GC 协程，按 artifact_gc_interval_sec 周期清理过期产物
+    from worker.orchestrator.artifact_gc import start_artifact_gc
+    artifact_gc_task = await start_artifact_gc()
+    logger.info("artifact GC started")
+
     # ------------------------------------------------------------------ #
     # 将控制权交给 FastAPI（处理请求）                                       #
     # ------------------------------------------------------------------ #
@@ -126,6 +131,13 @@ async def lifespan(app: FastAPI):
     queue_task.cancel()
     try:
         await queue_task
+    except Exception:
+        pass
+
+    # P1-19：取消 artifact GC 协程
+    artifact_gc_task.cancel()
+    try:
+        await artifact_gc_task
     except Exception:
         pass
 

@@ -70,17 +70,19 @@ async def run_task(task_id: str) -> None:
 
     调用方（queue._run_one）已负责：
         - 进入 semaphore 槽位（并发控制）
-        - 状态更新到 starting_container
-        - 异常捕获 → task_failed 事件
+        - 异常捕获 → task_failed / task_aborted / task_timed_out 事件
 
     本函数负责：
-        - preparing_workspace 状态及工作区准备
-        - container 启动、健康检查
-        - opencode 驱动（Phase 2 stub）
-        - 终态写入（completed / failed）
+        - 状态机驱动：preparing_workspace → starting_container →
+          starting_opencode → ... → completed
+        - 工作区准备、container 启动、健康检查
+        - opencode 驱动
+        - 终态写入（completed）
         - 清理：container + workspace + broker policy
 
-    若出现任何未捕获异常，都会由 queue._run_one 的 except 块写入 task_failed 事件。
+    [REVIEW: P1-16] queue 不再代写起始状态，本函数为状态机唯一写者。
+
+    若出现任何未捕获异常，都会由 queue._run_one 的 except 块写入对应终态事件。
     """
     settings = get_settings()
     db = await get_db()
@@ -90,7 +92,7 @@ async def run_task(task_id: str) -> None:
     if request is None:
         raise RuntimeError(f"TaskRequest not found for task_id={task_id}")
 
-    workspace_dir: Optional[Path] = None
+    workspaces_base = settings.data_dir / "workspaces"
 
     try:
         # ── Step 0: 安全门——拒绝未授权的 host bind mount ───────────────────
@@ -106,7 +108,6 @@ async def run_task(task_id: str) -> None:
         await insert_event(db, task_id, TaskEventKind.task_started,
                            {"phase": "preparing_workspace"})
 
-        workspaces_base = settings.data_dir / "workspaces"
         workspace_dir = await prepare_workspace(
             task_id=task_id,
             base_dir=workspaces_base,
@@ -190,7 +191,13 @@ async def run_task(task_id: str) -> None:
 
     finally:
         # ── 清理：无论成功失败都执行 ──────────────────────────────────────────
-        await _cleanup(task_id, workspace_dir, workspace_kind=request.workspace.kind)
+        # [REVIEW: P1-18] 工作区清理按 task_id 顶层目录整体删，避免 git_subpath
+        # 模式只删 subpath 留下顶层壳导致 inode 缓慢泄漏。
+        await _cleanup(
+            task_id,
+            workspace_kind=request.workspace.kind,
+            workspaces_base=workspaces_base,
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -233,8 +240,18 @@ async def _drive_opencode(
 # 清理
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def _cleanup(task_id: str, workspace_dir: Optional[Path], workspace_kind: str = "empty") -> None:
-    """任务终态后清理容器 + workspace + broker policy。"""
+async def _cleanup(
+    task_id: str,
+    *,
+    workspace_kind: str,
+    workspaces_base: Path,
+) -> None:
+    """任务终态后清理容器 + workspace + broker policy。
+
+    [REVIEW: P1-18] 按 `workspaces_base / task_id` 顶层目录整体删除，
+    `git_subpath` 模式下既清子目录也清父壳；workspace 从未创建（早失败）
+    或 local 模式下 cleanup_workspace 自身能容忍不存在的路径。
+    """
     # 停止并删除容器
     try:
         await stop_container(task_id, timeout=10)
@@ -243,9 +260,10 @@ async def _cleanup(task_id: str, workspace_dir: Optional[Path], workspace_kind: 
         logger.warning("task %s: container cleanup error: %s", task_id, exc)
 
     # 清理工作区（local 模式跳过，避免删除宿主机原始目录）
-    if workspace_dir is not None and workspace_kind != "local":
+    if workspace_kind != "local":
+        task_root = workspaces_base / task_id
         try:
-            await cleanup_workspace(workspace_dir)
+            await cleanup_workspace(task_root)
         except Exception as exc:
             logger.warning("task %s: workspace cleanup error: %s", task_id, exc)
 

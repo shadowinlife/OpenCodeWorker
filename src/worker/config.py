@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     # 任务产物文件保留天数，超期后由清理任务删除文件和 DB 记录
     artifact_retention_days: int = 7
+    # artifact GC 扫描周期（秒）。每次扫描会删除 expires_at <= now 的文件
+    # 与 DB 行；默认 1 小时，测试可调小至 0.05 秒触发立即扫描
+    # [REVIEW: P1-19]
+    artifact_gc_interval_sec: float = 3600.0
 
     # ------------------------------------------------------------------ #
     # HTTP 服务器                                                           #

@@ -139,6 +139,8 @@
 - **问题**：queue 写 `starting_container`，orchestrator 又写 `preparing_workspace` 再写一次 `starting_container`。SSE 客户端会看到状态来回跳。
 - **方向**：queue 只负责取队 + 进入 semaphore，状态机交给 orchestrator 完整驱动。
 
+> **2026-05-18 修订**：该项已修复。`queue._run_one` 删除两行写操作（`update_task_status(starting_container)` 与 `insert_event(task_started)`），仅保留 semaphore + 指标 + 终态分发；`orchestrator.run_task` 成为状态机的唯一写者，docstring 同步更新。新增 [tests/unit/test_state_flow_no_double_write.py](../../tests/unit/test_state_flow_no_double_write.py) 2 用例：被动 executor 后状态停在 `pending` 且无 `task_started` 事件；主动 executor 自驱后 `task_started` 仅写一次。
+
 ### P1-17 崩溃恢复只清孤儿容器，残留 `queued` 任务无人调度
 - **位置**：[src/worker/main.py:69-89](../../src/worker/main.py#L69-L89)
 - **问题**：reaper 只查容器；DB 里 status=`queued` 但还没起容器的任务在重启后既不会被入队也不会被标 failed。路线图 §H7 决策"标 failed(orphaned)"未对全部非终态状态生效。
@@ -151,10 +153,14 @@
 - **问题**：返回 `subpath_dir`，[orchestrator._cleanup](../../src/worker/orchestrator/orchestrator.py#L237-L241) 只删 subpath，task_id 顶层目录残留。
 - **方向**：`_cleanup` 接 `task_id`，按 `data_dir/workspaces/{task_id}` 整体删。
 
+> **2026-05-18 修订**：该项已修复。`_cleanup` 签名改为 `(task_id, *, workspace_kind, workspaces_base)`，按 `workspaces_base / task_id` 顶层目录整体调 `cleanup_workspace`；git_subpath 模式下 subpath 与 .git 目录均被收回，inode 不再泄漏。`local` 模式继续跳过（保护宿主原始目录），`task_root` 不存在时 `cleanup_workspace` 自身静默通过。新增 [tests/unit/test_workspace_cleanup_p1_18.py](../../tests/unit/test_workspace_cleanup_p1_18.py) 4 用例（git_subpath 整体删 / empty 模式 / local 跳过 / 缺 task_root 容忍）。
+
 ### P1-19 Artifact 文件清理未实现
 - **位置**：[src/worker/api/routes.py:148-152](../../src/worker/api/routes.py#L148-L152)
 - **现状**：`artifact_retention_days=7` 写入 DB 后从未被读取。
 - **方向**：lifespan 启动一个定时协程（asyncio）每小时扫一次过期 artifacts，删除文件 + DB 记录。
+
+> **2026-05-18 修订**：该项已修复。新增 [src/worker/orchestrator/artifact_gc.py](../../src/worker/orchestrator/artifact_gc.py)：lifespan 启动后台协程，按 `artifact_gc_interval_sec`（默认 3600s）扫描 `expires_at <= now` 的行，先 unlink 文件再删 DB 行；文件已不存在归 `missing_file`、路径越界或 unlink 失败归 `error` 并保留 DB 行待人工处理。同步新增 storage helper（`select_expired_artifacts` / `delete_artifact_row`）、metrics counter（`worker_artifact_gc_deleted_total{result}`）、单元测试 [tests/unit/test_artifact_gc.py](../../tests/unit/test_artifact_gc.py)（7 用例覆盖过期/未过期/缺文件/越界/NULL 路径/批量上限/metric 计数）。
 
 ### P1-20 README 与 Roadmap 状态严重不一致
 - **位置**：[README.md](../../README.md)

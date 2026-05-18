@@ -392,15 +392,9 @@ Phase 6 退出检查：
 
 ### Sprint 1 — 可靠性与完整性
 
-**已闭环（共 9 项）**：P1-9（WAL）/ P1-10（event_id race）/ P1-11（metrics callsites）/ P1-12（SSE 事件驱动）/ P1-13（HITL on_timeout）/ P1-14（auto_approve）/ P1-15（reject 阈值）/ P1-17（孤儿任务恢复）/ P1-20（README 同步）。逐项证据见 archive 各项的"修订"块。
+**已闭环（共 12 项）**：P1-9（WAL）/ P1-10（event_id race）/ P1-11（metrics callsites）/ P1-12（SSE 事件驱动）/ P1-13（HITL on_timeout）/ P1-14（auto_approve）/ P1-15（reject 阈值）/ P1-16（state 双写）/ P1-17（孤儿任务恢复）/ P1-18（git_subpath cleanup）/ P1-19（artifact GC）/ P1-20（README 同步）。逐项证据见 archive 各项的"修订"块。
 
-**仍 open（3 项）**：
-
-| ID | 问题 | 修复方向 |
-|---|---|---|
-| P1-16 | Queue 状态流转双写：queue.py 写 `starting_container`，orchestrator.py 又写 `preparing_workspace` 再 `starting_container` | queue 仅负责取队 + semaphore，状态机交给 orchestrator 完整驱动 |
-| P1-18 | workspace `git_subpath` 模式 cleanup 仅删 subpath，task_id 顶层目录残留 → inode 缓慢泄漏 | `_cleanup` 接 `task_id`，按 `data/workspaces/{task_id}` 整体删 |
-| P1-19 | artifact 文件 GC 未实现：`artifact_retention_days=7` 写入 DB 但从不读取 → 磁盘缓慢增长直到 ENOSPC | lifespan 起定时协程，每小时扫过期 artifact，删文件 + DB 标记 |
+**仍 open**：无（Sprint 1 全部清零；剩余测试覆盖缺口归并到下方"测试覆盖缺口"统一推进）。
 
 ### Sprint 2 — 代码质量
 

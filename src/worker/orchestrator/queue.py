@@ -8,7 +8,7 @@ asyncio 任务队列：调度与并发控制。
 
 Phase 1 行为（stub）：
     _task_executor 尚未注册时，任务会经历以下状态流转后直接完成：
-        queued → starting_container → completed
+        queued → preparing_workspace → completed
     这使 API 骨架可以在 Phase 2（Orchestrator 实现）之前完整运行和测试。
 
 Phase 2 集成方式：
@@ -16,6 +16,11 @@ Phase 2 集成方式：
     set_executor(my_orchestrator.run_task)
     # run_task(task_id: str) -> None 由 Orchestrator 实现完整的
     # workspace 准备 → 容器启动 → opencode 驱动 → 产物收集 流程
+
+[REVIEW: P1-16] queue 不再代写 `starting_container` 状态/`task_started` 事件。
+    队列只负责取队 + semaphore + 终态/指标回收；状态机由 orchestrator 完整驱动，
+    避免出现 queue 写 starting_container → orchestrator 又改写 preparing_workspace
+    的状态倒退。
 """
 from __future__ import annotations
 
@@ -117,19 +122,20 @@ async def _run_one(task_id: str) -> None:
 
     执行流程：
         1. 等待 semaphore（若并发满则阻塞）
-        2. 更新状态为 starting_container，发出 task_started 事件
-        3. 若有注册的 executor 则调用；否则走 stub 路径直接完成
-        4. 异常分发到对应终态：
+        2. 调用注册的 executor（orchestrator.run_task）；executor 内部
+           完整驱动状态机：preparing_workspace → starting_container →
+           starting_opencode → ... → completed。
+        3. 异常分发到对应终态：
             TaskTimedOutError → timed_out + task_timed_out
             TaskAbortedError  → aborted   + task_aborted
             其它 Exception    → failed    + task_failed
+
+    [REVIEW: P1-16] queue 不再代写状态/起始事件，避免与 orchestrator 双写。
     """
     assert _semaphore is not None, "start_queue_worker() 未被调用"
     async with _semaphore:
         db = await get_db()
         logger.info("task %s: starting execution slot", task_id)
-        await update_task_status(db, task_id, TaskStatus.starting_container)
-        await insert_event(db, task_id, TaskEventKind.task_started)
 
         # P1-11：进入活跃槽位 + 起始时间，用于指标统计
         metrics.inc_active_tasks()
