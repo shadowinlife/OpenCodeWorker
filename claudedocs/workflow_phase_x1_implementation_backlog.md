@@ -5,7 +5,7 @@
 > **Sources**:
 > - [docs/design/strategy-artifact-and-scheduling.md](../docs/design/strategy-artifact-and-scheduling.md) (v2.10, 5 themes + 16 OQ all closed)
 > - [docs/design/follow-up-recommendations.md](../docs/design/follow-up-recommendations.md) (3-lane execution roadmap)
-> - [docs/code-review-2026-05-14.md](../docs/code-review-2026-05-14.md) (worker P0/P1 backlog)
+> - [docs/archive/code-review-2026-05-14.md](../docs/archive/code-review-2026-05-14.md) (worker P0/P1 backlog)
 > **Next**: After review/approval, use `/sc:implement` per task block to execute
 
 ---

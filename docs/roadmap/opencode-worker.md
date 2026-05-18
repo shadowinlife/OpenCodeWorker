@@ -2,24 +2,23 @@
 
 > 本文档是 `VibeTradingOpenCodeWorker` 仓库的实施路线图。
 >
-> **当前阶段（2026-05-14）**：
-> - ✅ **Phase 0 — 已归档**：基线/技术 spike 完成，ADR-001~006 全部 Accepted。
-> - ✅ **Phase 1 — 已归档**：Worker Contract & API 骨架，本机 smoke test 通过（见 §1.4）。
-> - ✅ **Phase 2 — 已归档**：Docker Sandbox + Workspace **代码实现完成**；镜像构建 + 安全回归 7/7 PASS（2026-05-14，见 Phase 2.5 退出检查）。
->   - ⚠️ **Broker 出口代理推迟到 Phase 7**：CONNECT 隧道占位、broker 进程未在 lifespan 启动（P0-1 / P0-3）；MVP 阶段 `WORKER_BROKER_ENABLED` 默认 `false`，容器网络 `internal=False`（P0-2 已确认 MVP 接受降级）。详见 [code-review-2026-05-14.md](../code-review-2026-05-14.md) 与 [ADR-004 实现状态表](../adr/ADR-004-broker-boundary.md)。
-> - ✅ **Phase 3 — 已归档**：OpenCode HTTP Adapter + oh-my agent 路由 + HITL 接入，E2E 天齐锂业分析跑通。
->   - ✅ **2026-05-16 修订**：P0-5 / P0-6 / P0-7 已修复；agent 恢复为 `Prometheus` / `Sisyphus`，timeout / abort 终态分别落为 `task_timed_out` / `task_aborted`。
-> - ✅ **Phase 5 — 已归档**：HITL 闭环、超时事件、mode escalation、断线重连。
->   - ✅ **2026-05-16 修订**：P1-13 已修复；`on_timeout="continue|escalate"` 超时后不再误入 abort/failure 路径。
->   - ✅ **2026-05-18 修订**：P1-14 已修复；`HitlPolicy.auto_approve` 通过 fnmatch 匹配 `<kind>:<tool>` 短路 HITL。
-> - 🟡 **Phase 6 — 部分完成，待收尾**：metrics / logging 框架已就位，metrics callsites 已于 2026-05-18 接入（P1-11 closed）；集成测试套与安全回归脚本待自动化。
-> - ⬜ **Phase 7** — 规划中（多租户 / 加密 / 跨节点等）。
+> **当前阶段（2026-05-18 更新）**：
 >
-> **2026-05-14 全量 code review 输出**：[code-review-2026-05-14.md](../code-review-2026-05-14.md)
-> 包含 8 项 P0（安全 / 契约失真）、12 项 P1（可靠性）、8 项 P2（质量）以及测试覆盖缺口列表。下文各 Phase 已交付项中以 `[REVIEW: P0-N]` 标记的位置对应 review 中的具体 finding。
+> | Phase | 状态 | 摘要 |
+> |---|---|---|
+> | Phase 0 | ✅ 已归档 | 基线 + ADR-001~006 全部 Accepted |
+> | Phase 1 | ✅ 已归档 | Worker Contract + API 骨架（§1.4 smoke test 通过） |
+> | Phase 2 | ✅ 已归档 | Docker Sandbox + Workspace；镜像 + 安全回归 7/7 PASS。Broker 三件套（P0-1/2/3）⏸ 推迟 Phase 7（详见 §H1b 与 [ADR-004](../adr/ADR-004-broker-boundary.md)） |
+> | Phase 3 | ✅ 已归档 | OpenCode HTTP Adapter + oh-my agent 路由 + HITL；E2E 跑通 |
+> | Phase 5 | ✅ 已归档 | HITL 闭环、超时事件、mode escalation、断线重连 |
+> | Phase 6 | 🟡 部分完成 | 可观测性 + 单测齐备（118/118 pass）；P1-9/11/12 等 8 项 closed；集成测试 + 安全回归脚本化待补 |
+> | Phase 7 | ⬜ 规划中 | 多租户 / 加密 / 跨节点 / broker 完整交付 |
 >
-> 2026-05-13 opencode / oh-my-opencode 本机自检证据，见 §1.3。
-> 2026-05-13 Phase 1 骨架实现完成并本机验证，见 §1.4。
+> Sprint 0/1 P0/P1 详细闭环情况见 §8；逐项证据见
+> [archive/code-review-2026-05-14.md](../archive/code-review-2026-05-14.md)
+> （2026-05-14 全量 review，已归档；含 8 P0 + 12 P1 + 8 P2 + 测试缺口）。
+>
+> §1.3 / §1.4 保留 2026-05-13 的本机自检与骨架验证记录。
 > 后续若执行中出现新的人工决策点，按 `🟠 HITL` 标注追加。
 
 ---
@@ -265,13 +264,7 @@ pending
 
 > **状态：✅ 已归档（Phase 2 代码 commit df01b23；Phase 2.5 镜像构建 + 安全回归 2026-05-14；运行时 baseline 已于 2026-05-16 升级到 opencode 1.15.0 / oh-my-openagent 4.1.2）**
 >
-> **Review 警示（见 [code-review-2026-05-14.md](../code-review-2026-05-14.md)）**：
-> - `[REVIEW: P0-1]` Broker CONNECT 隧道是占位实现，HTTPS 出口实际不通。
-> - `[REVIEW: P0-2]` Sandbox 网络从 `internal=True` 退回 `internal=False`，绕过 broker 白名单——与 ADR-004 / §H1b 直接冲突。
-> - `[REVIEW: P0-3]` Broker 进程从未被 lifespan 启动，`HTTP_PROXY=http://broker:8090` 实际无人监听。
-> - `[REVIEW: P0-4]` `local` workspace 模式以 root + 关只读 FS 启动，绕过 MVP 沙箱安全策略。
->
-> 上述四项不阻塞 Phase 2 归档（代码已落地、镜像已构建、安全回归用例 7/7 PASS），但需在 Phase 6 收尾或 Phase 7 准备前消化。
+> **关联 review 项**：P0-1 / P0-2 / P0-3（broker 三件套）⏸ 推迟 Phase 7；P0-4（local workspace）✅ 已加 `WORKER_ALLOW_HOST_MOUNT` gate。详见 [archive/code-review-2026-05-14.md](../archive/code-review-2026-05-14.md)。
 
 **主要交付**：Dockerfile（ubuntu:24.04 + opencode / oh-my-openagent 离线制品，sandbox uid 1000，`--read-only/cap-drop/pids-limit`）；`sandbox/manager.py` 完整生命周期；`workspace/handler.py`（zip-slip/symlink 防逃逸）；`broker/proxy.py` 域名白名单 SSRF 防护；Orchestrator 全链路（workspace→network→policy→container→cleanup）；安全回归 7/7 PASS（commit df01b23）。2026-05-16 已将运行时 baseline 升级到 `1.15.0 / 4.1.2`。
 
@@ -281,14 +274,7 @@ pending
 
 > **状态：✅ 已归档（commit e32c5e5，2026-05-14；E2E 天齐锂业分析跑通）**
 >
-> **2026-05-16 修订**：`[REVIEW: P0-5]` 已修复，当前容器运行时重新使用 `Prometheus` / `Sisyphus`，不再走内置 `plan` / `build` fallback。
-> **2026-05-16 修订**：`[REVIEW: P0-6]` / `[REVIEW: P0-7]` 已修复；driver 现在抛 `TaskTimedOutError` / `TaskAbortedError`，queue 分别写入 `task_timed_out` / `task_aborted` 终态事件。
->
-> **Review 警示（见 [code-review-2026-05-14.md](../code-review-2026-05-14.md)）**：
-> - `[REVIEW: P0-5]` agent 名误用为 `"plan"` / `"build"`（opencode 内置）而非 `"Prometheus"` / `"Sisyphus"`（oh-my）；与 ADR-001 / ADR-006 不一致。该项已于 2026-05-16 修复。
-> - `[REVIEW: P0-6]` `task_timed_out` 事件类型缺失，超时被错误转为 `task_failed`。该项已于 2026-05-16 修复。
-> - `[REVIEW: P0-7]` HITL abort 路径错误地写入 `task_failed` 而非 `task_aborted`。该项已于 2026-05-16 修复。
-> - `[REVIEW: P1-15]` ✅ 已于 2026-05-18 修复：driver 累积 reject 计数达 `_REJECT_THRESHOLD=3` 时自动 abort 并发 `mode_escalation_suggested`。
+> **关联 review 项**：P0-5 / P0-6 / P0-7（agent 名 + 终态事件）✅ 已于 2026-05-16 修复；P1-15（reject 阈值）✅ 已于 2026-05-18 修复。详见 [archive/code-review-2026-05-14.md](../archive/code-review-2026-05-14.md)。
 
 **主要交付**：`adapters/opencode/client.py`（health/SSE/session/message/prompt_async/permission/diff/abort 全链路）；`event_stream.py` opencode↔TaskEvent 映射；`plan_first`（Prometheus）与 `direct_execute`（Sisyphus）双模式；`_handle_plan_approval` + `_handle_permission` HITL 路径；artifact 收集（diff + transcript）；E2E 天齐锂业分析跑通（commit e32c5e5）。
 
@@ -300,10 +286,7 @@ pending
 
 > **状态：✅ 已归档（commit fbaa13b，2026-05-14）**
 >
-> **Review 警示（见 [code-review-2026-05-14.md](../code-review-2026-05-14.md)）**：
-> - `[REVIEW: P1-13]` `HitlPolicy.on_timeout="continue"` / `"escalate"` 路径未实现，仅识别 `"abort"`；schema 定义与实际行为不一致。该项已于 2026-05-16 修复：超时时统一归一化为 `approve` fallback，并保留 `hitl_timeout` 事件通知上游。
-> - `[REVIEW: P1-14]` ✅ 已于 2026-05-18 修复：`_match_auto_approve` + `_auto_approve_permission` 实装，fnmatch 模式匹配命中即跳 HITL。
-> - `[REVIEW: P1-10]` `_next_event_id` 在并发写入下存在 UNIQUE 冲突 race；driver 的 `_consume_sse` 与 `_handle_permission` 并发场景下会触发。
+> **关联 review 项**：P1-13（HITL on_timeout）✅ 2026-05-16；P1-14（auto_approve）/ P1-10（event_id race）✅ 2026-05-18。详见 [archive/code-review-2026-05-14.md](../archive/code-review-2026-05-14.md)。
 
 **主要交付**：统一 DecisionRequest（plan approval/tool permission/file write/broker egress/long-task continue）；HITL 超时 `default_on_timeout=abort`（`hitl_timeout` 事件 + `expire_decision` DB + abort + 容器 stop）；SSE `Last-Event-ID` 断线续传；Decision 幂等；`mode_escalation_suggested`（权限请求 ≥3 次触发）；重启后孤儿任务标 `failed(orphaned)`（commit fbaa13b）。
 
@@ -313,11 +296,7 @@ pending
 
 > **状态：🟡 部分完成，待收尾**
 >
-> **Review 警示（见 [code-review-2026-05-14.md](../code-review-2026-05-14.md)）**：
-> - `[REVIEW: P1-11]` ✅ 已于 2026-05-18 修复：queue / sandbox / driver callsites 全部接入。
-> - `[REVIEW: P1-9]` ✅ 已于 2026-05-18 修复：`init_db` 启用 WAL + synchronous=NORMAL + busy_timeout=5000。
-> - `[REVIEW: P1-12]` ✅ 已于 2026-05-18 修复：`worker.orchestrator.event_bus` 替代 0.5s 轮询，新事件 < 1ms 唤醒。
-> - 集成测试（HITL 时序、安全回归脚本化）仍 pending；现仅有 `tests/fixtures/stub_opencode_server.py` 但未串到 integration 用例。
+> **关联 review 项**：P1-9（WAL）/ P1-11（metrics callsites）/ P1-12（SSE 事件驱动）✅ 已于 2026-05-18 修复。集成测试（HITL 时序、安全回归脚本化）仍 pending —— 现仅有 `tests/fixtures/stub_opencode_server.py` 未串到 integration 用例。详见 [archive/code-review-2026-05-14.md](../archive/code-review-2026-05-14.md)。
 
 - [x] 测试矩阵：
   - [x] 单元：state machine（test_state_machine.py）、event mapper（test_event_stream.py 41 用例）、permission mapper（test_permission_mapper.py）。
@@ -396,38 +375,32 @@ Phase 6 退出检查：
 
 ---
 
-## 8. Sprint Backlog（来源：code-review-2026-05-14.md）
+## 8. Sprint Backlog（来源：archive/code-review-2026-05-14.md）
 
-> 完整 review 原文见 [`docs/code-review-2026-05-14.md`](../code-review-2026-05-14.md)。
-> 各条目格式：`[P<优先级>-<序号>] 问题描述 → 修复方向`
+> 完整 review 原文（含每项的修复证据 + 测试链接）见
+> [`docs/archive/code-review-2026-05-14.md`](../archive/code-review-2026-05-14.md)。
+> 本节只列**当前仍 open** 的条目；已闭环条目折叠为一行汇总。
 
 ### Sprint 0 — 正确性修复（阻塞合并）
 
-| ID | 问题 | 修复方向 |
-|---|---|---|
-| P0-5 | agent 名误用 `"plan"`/`"build"`，与 ADR 不符 | 已于 2026-05-16 修复：恢复 `"Prometheus"`/`"Sisyphus"` |
-| P0-6 | `task_timed_out` 事件类型缺失，超时错转 `task_failed` | 已于 2026-05-16 修复：补充 `task_timed_out` + `TaskTimedOutError` + queue 分流 |
-| P0-7 | HITL abort 路径写 `task_failed` 而非 `task_aborted` | 已于 2026-05-16 修复：改为 `TaskAbortedError` + `task_aborted` 终态 |
-| P0-4 | `local` workspace 模式以 root + 关只读 FS 启动 | 强制 uid 1000 + `--read-only` |
-| P0-8 | artifact 路径未校验，存在路径穿越风险 | 下载前 resolve + prefix 校验 |
-| P0-1/P0-3 | Broker CONNECT 隧道占位 + lifespan 未启动 broker | 推迟 Phase 7，在此记录已知缺陷 |
+**全部已闭环或推迟 Phase 7。**
+
+| 条目 | 状态 |
+|---|---|
+| P0-4 / P0-5 / P0-6 / P0-7 / P0-8 | ✅ 已闭环（详见 archive） |
+| P0-1 / P0-2 / P0-3 | ⏸ 推迟 Phase 7（broker 完整交付前 MVP 接受降级） |
 
 ### Sprint 1 — 可靠性与完整性
 
+**已闭环（共 9 项）**：P1-9（WAL）/ P1-10（event_id race）/ P1-11（metrics callsites）/ P1-12（SSE 事件驱动）/ P1-13（HITL on_timeout）/ P1-14（auto_approve）/ P1-15（reject 阈值）/ P1-17（孤儿任务恢复）/ P1-20（README 同步）。逐项证据见 archive 各项的"修订"块。
+
+**仍 open（3 项）**：
+
 | ID | 问题 | 修复方向 |
 |---|---|---|
-| P1-9 | SQLite WAL pragma 承诺未执行 | ✅ 已于 2026-05-18 修复：`init_db` 启用 `journal_mode=WAL` + `synchronous=NORMAL` + `busy_timeout=5000`；测试 [test_db_wal.py](../../tests/unit/test_db_wal.py) 覆盖 |
-| P1-10 | `_next_event_id` 并发 UNIQUE 冲突 race | ✅ 已于 2026-05-18 修复：per-task `asyncio.Lock` 串行化 SELECT MAX + INSERT；`queue._run_one` 终态后 `discard_task_locks` 释放；测试 [test_event_id_race.py](../../tests/unit/test_event_id_race.py) 覆盖 |
-| P1-11 | metrics helper 全仓 0 callsite，`/metrics` 永远空 | ✅ 已于 2026-05-18 修复：queue（active/count/duration/abort_reason）、sandbox（container_start_ms）、driver（hitl_wait_seconds）callsites 全部接入；测试 [test_metrics_wiring.py](../../tests/unit/test_metrics_wiring.py) 覆盖 |
-| P1-12 | SSE 实时推送是 0.5s polling 而非事件驱动 | ✅ 已于 2026-05-18 修复：`worker.orchestrator.event_bus` 提供 per-task 订阅者唤醒；`insert_event` 写库后 notify，SSE handler 用 `wait_for(sub.wait())` 替代 polling；测试 [test_sse_event_bus.py](../../tests/unit/test_sse_event_bus.py) 覆盖 |
-| P1-13 | `on_timeout="continue"`/`"escalate"` 路径未实现 | 已于 2026-05-16 修复：driver 统一归一化 continue/escalate timeout fallback |
-| P1-14 | `auto_approve` 字段 driver 完全不查 | ✅ 已于 2026-05-18 修复：`_match_auto_approve` 用 fnmatch 匹配 `<DecisionKind>:<tool>` 模式（支持 `*` 通配），命中即跳 HITL 直接 respond "once" 并写 `decision_received(auto_approved=True)`；测试 [test_auto_approve.py](../../tests/unit/test_auto_approve.py) 覆盖 |
-| P1-15 | `reject` 无计数上限，极端场景死循环 | ✅ 已于 2026-05-18 修复：driver `_REJECT_THRESHOLD=3` + `self._reject_count`，达阈值发 `mode_escalation_suggested` + `_signal_abort`；approve 重置；测试 [test_reject_threshold.py](../../tests/unit/test_reject_threshold.py) 覆盖 |
-| P1-16 | 状态机无效转换未拒绝 | `transition()` 加合法前置状态校验 |
-| P1-17 | `task_queued` 在 queue 满时未发出 | queue 满路径补发 `task_queued` 事件 |
-| P1-17b | 崩溃重启后 `queued` 等无容器的非终态任务永久卡死（reaper 只清容器） | ✅ 已于 2026-05-18 修复：`worker.orchestrator.recovery.recover_orphaned_tasks` 在 lifespan 兜底扫描非终态任务并标 failed(orphaned)；测试 [test_orphan_recovery.py](../../tests/unit/test_orphan_recovery.py) 覆盖 |
-| P1-18 | workspace 临时目录缺失清理 | orchestrator cleanup 路径覆盖临时 workspace |
-| P1-19 | artifact GC 策略无实现 | 终态任务 TTL 到期后删文件 + DB 标记 |
+| P1-16 | Queue 状态流转双写：queue.py 写 `starting_container`，orchestrator.py 又写 `preparing_workspace` 再 `starting_container` | queue 仅负责取队 + semaphore，状态机交给 orchestrator 完整驱动 |
+| P1-18 | workspace `git_subpath` 模式 cleanup 仅删 subpath，task_id 顶层目录残留 → inode 缓慢泄漏 | `_cleanup` 接 `task_id`，按 `data/workspaces/{task_id}` 整体删 |
+| P1-19 | artifact 文件 GC 未实现：`artifact_retention_days=7` 写入 DB 但从不读取 → 磁盘缓慢增长直到 ENOSPC | lifespan 起定时协程，每小时扫过期 artifact，删文件 + DB 标记 |
 
 ### Sprint 2 — 代码质量
 

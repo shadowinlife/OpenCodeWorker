@@ -39,13 +39,13 @@
 | Phase 6 | 可观测性（metrics callsites 已接入 P1-11）+ 集成测试套自动化（待补）| 🟡 部分完成 |
 | Phase 7 | 多租户 / 加密 / 跨节点调度 / **broker 出口代理完整实现** | ⬜ 规划中 |
 
-详细路线图见 [docs/roadmap/opencode-worker.md](docs/roadmap/opencode-worker.md)，最近一次全量 code review：[docs/code-review-2026-05-14.md](docs/code-review-2026-05-14.md)。
+详细路线图见 [docs/roadmap/opencode-worker.md](docs/roadmap/opencode-worker.md)，最近一次全量 code review：[docs/archive/code-review-2026-05-14.md](docs/archive/code-review-2026-05-14.md)。
 
 ## ⚠️ MVP 安全模型现状（2026-05-14 review 校准）
 
 为避免对外承诺与实际行为脱节，本节明确 MVP 阶段的实际隔离边界：
 
-- **容器具备任意出网能力**：`worker-sandbox-net` 当前以 `internal=False` 创建，容器可直连任意外网（含 LLM provider 与公网 MCP）；最初 ADR-004 / Roadmap §H1b 中"默认无外网，仅可访问 Host Broker"的承诺**在 MVP 阶段已撤回**，待 broker 联通后恢复（见 [code-review-2026-05-14.md P0-2](docs/code-review-2026-05-14.md)）。
+- **容器具备任意出网能力**：`worker-sandbox-net` 当前以 `internal=False` 创建，容器可直连任意外网（含 LLM provider 与公网 MCP）；最初 ADR-004 / Roadmap §H1b 中"默认无外网，仅可访问 Host Broker"的承诺**在 MVP 阶段已撤回**，待 broker 联通后恢复（见 [code-review-2026-05-14.md P0-2](docs/archive/code-review-2026-05-14.md)）。
 - **Broker 出口代理推迟到 Phase 7**：CONNECT 隧道是占位实现、broker 进程未在 lifespan 启动，因此 `WORKER_BROKER_ENABLED=true` 路径**不要在生产环境打开**——即便打开，HTTP_PROXY 也无人监听。Worker 默认值已改为 `WORKER_BROKER_ENABLED=false`（见 [ADR-004 实现状态](docs/adr/ADR-004-broker-boundary.md)）。
 - **进程内仍生效的隔离手段**：非 root（uid=1000）+ read-only root FS + tmpfs / cap-drop / no-new-privileges + seccomp（见 ADR-002 §安全回归）+ workspace 路径穿越防护 + `WORKER_ALLOW_HOST_MOUNT` 默认关闭（拒绝 `workspace.kind=local` 的 host bind mount，见 P0-4 修复）。
 - **artifact 下载已强制路径约束**：仅允许下载 `data/artifacts/` 子树内文件（P0-8 修复）。

@@ -19,7 +19,7 @@
 
 ## 历史实现状态（2026-05-14 review 校准）
 
-> 详见 [code-review-2026-05-14.md](../code-review-2026-05-14.md) P0-5。
+> 详见 [code-review-2026-05-14.md](../archive/code-review-2026-05-14.md) P0-5。
 
 - **容器内 `GET /agent` 实测返回**：`build / compaction / explore / general / plan / summary / title` —— **全部为 opencode 1.14.30 内置 agent**，没有 oh-my-openagent 暴露的 `Prometheus` / `Sisyphus`。
 - **opencode 启动日志中加载的 plugin** 都是内置混淆名（`EJ / bJ / Px / dI / kx / gx`），未见 `oh-my-openagent`。

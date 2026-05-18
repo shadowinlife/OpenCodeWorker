@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # 是否启用 Broker 出口代理（True = 注入 HTTP_PROXY 并管控容器出站流量）
     # ⚠️ MVP 阶段默认 False：CONNECT 隧道与 broker 进程启停尚未实现
-    # （见 docs/code-review-2026-05-14.md P0-1/P0-3、ADR-004 实现状态表）。
+    # （见 docs/archive/code-review-2026-05-14.md P0-1/P0-3、ADR-004 实现状态表）。
     # 即便显式设为 True，也只会注入 HTTP_PROXY 环境变量，宿主上无人监听，
     # 容器对外请求会立即失败。在 broker 完整实现前不要打开此开关。
     # 环境变量：WORKER_BROKER_ENABLED=true

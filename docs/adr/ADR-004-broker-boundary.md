@@ -12,7 +12,7 @@
 
 ## MVP 阶段决策（2026-05-14 修订）
 
-> 经 [code-review-2026-05-14.md](../code-review-2026-05-14.md) 评审确认：
+> 经 [code-review-2026-05-14.md](../archive/code-review-2026-05-14.md) 评审确认：
 >
 > 1. **MVP 阶段不再把 broker 视作默认安全模型**。`WORKER_BROKER_ENABLED` 默认值已改为 `False`，调用方启用前需自行确认 broker 进程已可用。
 > 2. **容器网络当前为 `internal=False`**：容器可直连任意外网。原"默认无外网，仅可访问 Host Broker"的对外承诺**撤回**到 Phase 7（与 broker CONNECT 隧道、broker 进程 lifespan 启停一同恢复）。
@@ -23,7 +23,7 @@
 
 ## 实现状态（2026-05-14 review 输出）
 
-> 详见 [code-review-2026-05-14.md](../code-review-2026-05-14.md) P0-1/P0-2/P0-3。
+> 详见 [code-review-2026-05-14.md](../archive/code-review-2026-05-14.md) P0-1/P0-2/P0-3。
 
 | 子能力 | 决策（MVP / Phase 7） | 当前实现 | 备注 |
 |---|---|---|---|
