@@ -7,8 +7,10 @@ SQLite 数据库初始化与连接管理。
     - task_events 表设计为 append-only（尚未写入的行不能再修改），
       为 SSE cursor replay 提供可靠的事件溯源。
     - 所有写操作完成后立即 commit，避免内存中数据在进程崩溃后丢失。
-    - WAL 模式尚未启用；若并发写入出现锁争战，可在 init_db 中添加
-      `PRAGMA journal_mode=WAL`。
+    - 启用 WAL 模式 + busy_timeout（init_db 中设置；详见 P1-9 修复）：
+        * journal_mode=WAL：读写不互斥，并发任务写事件不再被读 SSE 阻塞
+        * synchronous=NORMAL：在 WAL 下兼顾耐久性与吞吐
+        * busy_timeout=5000：读写抢锁时等待 5s 而非立刻 SQLITE_BUSY
 
     表结构视图：
         tasks          — 任务元数据与状态，每任务一行
@@ -106,6 +108,13 @@ async def init_db(db_path: Path) -> aiosqlite.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = await aiosqlite.connect(str(db_path))
     conn.row_factory = aiosqlite.Row
+
+    # P1-9: 启用 WAL + 抢锁等待，必须先于任何数据写入
+    # journal_mode=WAL 一旦设置即写入数据库文件 header，跨重启持久化
+    await conn.execute("PRAGMA journal_mode=WAL")
+    await conn.execute("PRAGMA synchronous=NORMAL")
+    await conn.execute("PRAGMA busy_timeout=5000")
+
     await conn.executescript(_DDL)
     await conn.commit()
     _connection = conn

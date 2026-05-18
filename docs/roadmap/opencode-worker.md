@@ -12,7 +12,7 @@
 > - ✅ **Phase 5 — 已归档**：HITL 闭环、超时事件、mode escalation、断线重连。
 >   - ✅ **2026-05-16 修订**：P1-13 已修复；`on_timeout="continue|escalate"` 超时后不再误入 abort/failure 路径。
 >   - ⚠️ `auto_approve` 字段仍未实现（P1-14）。
-> - 🟡 **Phase 6 — 部分完成，待收尾**：metrics / logging 框架已就位，**但 metrics 计数器无 callsite**（P1-11）；集成测试套与安全回归脚本待自动化。
+> - 🟡 **Phase 6 — 部分完成，待收尾**：metrics / logging 框架已就位，metrics callsites 已于 2026-05-18 接入（P1-11 closed）；集成测试套与安全回归脚本待自动化。
 > - ⬜ **Phase 7** — 规划中（多租户 / 加密 / 跨节点等）。
 >
 > **2026-05-14 全量 code review 输出**：[code-review-2026-05-14.md](../code-review-2026-05-14.md)
@@ -288,7 +288,7 @@ pending
 > - `[REVIEW: P0-5]` agent 名误用为 `"plan"` / `"build"`（opencode 内置）而非 `"Prometheus"` / `"Sisyphus"`（oh-my）；与 ADR-001 / ADR-006 不一致。该项已于 2026-05-16 修复。
 > - `[REVIEW: P0-6]` `task_timed_out` 事件类型缺失，超时被错误转为 `task_failed`。该项已于 2026-05-16 修复。
 > - `[REVIEW: P0-7]` HITL abort 路径错误地写入 `task_failed` 而非 `task_aborted`。该项已于 2026-05-16 修复。
-> - `[REVIEW: P1-15]` `respond_permission="reject"` 在 opencode 中是单次拒绝，driver 没有 reject 计数上限，极端场景可能死循环到任务超时。
+> - `[REVIEW: P1-15]` ✅ 已于 2026-05-18 修复：driver 累积 reject 计数达 `_REJECT_THRESHOLD=3` 时自动 abort 并发 `mode_escalation_suggested`。
 
 **主要交付**：`adapters/opencode/client.py`（health/SSE/session/message/prompt_async/permission/diff/abort 全链路）；`event_stream.py` opencode↔TaskEvent 映射；`plan_first`（Prometheus）与 `direct_execute`（Sisyphus）双模式；`_handle_plan_approval` + `_handle_permission` HITL 路径；artifact 收集（diff + transcript）；E2E 天齐锂业分析跑通（commit e32c5e5）。
 
@@ -340,10 +340,10 @@ pending
 Phase 6 退出检查：
 - [x] 单元测试 41/41 通过（pytest tests/unit/）。
 - [x] Prometheus /metrics 端点**格式**以 text/plain; version=0.0.4 响应。
-- [ ] **Metrics counter 接入** — `[REVIEW: P1-11]` helper 已定义但全仓 0 callsite，待 Sprint 1 修复。
+- [x] **Metrics counter 接入** — `[REVIEW: P1-11]` 已于 2026-05-18 修复：queue / sandbox / driver 关键路径全部接入 counter / summary。
 - [x] 结构化日志 correlation filter 通过语法检查 + 模块导入验证。
 - [ ] 集成测试（HITL 时序、安全回归脚本化）需真实 Docker 环境，标记为 pending。
-- [ ] WAL 模式启用 — `[REVIEW: P1-9]` 注释承诺已启用，实际未执行 PRAGMA。
+- [x] WAL 模式启用 — `[REVIEW: P1-9]` 已于 2026-05-18 修复，`init_db` 启用 WAL + synchronous=NORMAL + busy_timeout=5000。
 
 ---
 
@@ -416,15 +416,16 @@ Phase 6 退出检查：
 
 | ID | 问题 | 修复方向 |
 |---|---|---|
-| P1-9 | SQLite WAL pragma 承诺未执行 | `init_db` 加 `PRAGMA journal_mode=WAL` |
-| P1-10 | `_next_event_id` 并发 UNIQUE 冲突 race | 改用 DB `MAX(id)+1` 或序列化写入 |
-| P1-11 | metrics helper 全仓 0 callsite，`/metrics` 永远空 | orchestrator/routes 关键路径接入 counter |
+| P1-9 | SQLite WAL pragma 承诺未执行 | ✅ 已于 2026-05-18 修复：`init_db` 启用 `journal_mode=WAL` + `synchronous=NORMAL` + `busy_timeout=5000`；测试 [test_db_wal.py](../../tests/unit/test_db_wal.py) 覆盖 |
+| P1-10 | `_next_event_id` 并发 UNIQUE 冲突 race | ✅ 已于 2026-05-18 修复：per-task `asyncio.Lock` 串行化 SELECT MAX + INSERT；`queue._run_one` 终态后 `discard_task_locks` 释放；测试 [test_event_id_race.py](../../tests/unit/test_event_id_race.py) 覆盖 |
+| P1-11 | metrics helper 全仓 0 callsite，`/metrics` 永远空 | ✅ 已于 2026-05-18 修复：queue（active/count/duration/abort_reason）、sandbox（container_start_ms）、driver（hitl_wait_seconds）callsites 全部接入；测试 [test_metrics_wiring.py](../../tests/unit/test_metrics_wiring.py) 覆盖 |
 | P1-12 | SSE 实时推送是 0.5s polling 而非事件驱动 | asyncio.Event 替换 sleep 轮询 |
 | P1-13 | `on_timeout="continue"`/`"escalate"` 路径未实现 | 已于 2026-05-16 修复：driver 统一归一化 continue/escalate timeout fallback |
 | P1-14 | `auto_approve` 字段 driver 完全不查 | driver 读取字段，自动通过低风险决策 |
-| P1-15 | `reject` 无计数上限，极端场景死循环 | driver 加 reject 计数器 + 上限中止 |
+| P1-15 | `reject` 无计数上限，极端场景死循环 | ✅ 已于 2026-05-18 修复：driver `_REJECT_THRESHOLD=3` + `self._reject_count`，达阈值发 `mode_escalation_suggested` + `_signal_abort`；approve 重置；测试 [test_reject_threshold.py](../../tests/unit/test_reject_threshold.py) 覆盖 |
 | P1-16 | 状态机无效转换未拒绝 | `transition()` 加合法前置状态校验 |
 | P1-17 | `task_queued` 在 queue 满时未发出 | queue 满路径补发 `task_queued` 事件 |
+| P1-17b | 崩溃重启后 `queued` 等无容器的非终态任务永久卡死（reaper 只清容器） | ✅ 已于 2026-05-18 修复：`worker.orchestrator.recovery.recover_orphaned_tasks` 在 lifespan 兜底扫描非终态任务并标 failed(orphaned)；测试 [test_orphan_recovery.py](../../tests/unit/test_orphan_recovery.py) 覆盖 |
 | P1-18 | workspace 临时目录缺失清理 | orchestrator cleanup 路径覆盖临时 workspace |
 | P1-19 | artifact GC 策略无实现 | 终态任务 TTL 到期后删文件 + DB 标记 |
 

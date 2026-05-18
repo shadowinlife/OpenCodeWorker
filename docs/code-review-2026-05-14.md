@@ -85,15 +85,26 @@
 - **现状**：注释、路线图均声称"WAL 模式"，但 `init_db` 只跑 DDL。
 - **方向**：`PRAGMA journal_mode=WAL` + `PRAGMA synchronous=NORMAL` + `PRAGMA busy_timeout=5000`。
 
+> **2026-05-18 修订**：该项已修复。`init_db` 在建表前依次执行 `PRAGMA journal_mode=WAL` / `synchronous=NORMAL` / `busy_timeout=5000`，模块 docstring 同步更新。新增 [tests/unit/test_db_wal.py](../tests/unit/test_db_wal.py) 4 用例（journal_mode/synchronous/busy_timeout/跨重启持久化），全部通过。
+
 ### P1-10 `_next_event_id` race condition 真实存在
 - **位置**：[src/worker/storage/repo.py:128-141](../src/worker/storage/repo.py#L128-L141)
 - **问题**：driver 的 `_consume_sse` 与 `_handle_permission` 并发写入会撞 UNIQUE → IntegrityError → queue 写 task_failed → 整个任务挂掉。
 - **方向**：per-task `asyncio.Lock`；或把 `event_id` 改为 DB 端 trigger 自增（每 task 维护 sequence 表）。
 
+> **2026-05-18 修订**：该项已修复。`repo.py` 引入 per-task `_event_locks` dict + `_get_event_lock(task_id)`，`insert_event` 在锁内执行 SELECT MAX + INSERT；`queue._run_one` 在 finally 块、`_write_terminal` 在 finally 块均调用 `discard_task_locks(task_id)` 释放条目。新增 [tests/unit/test_event_id_race.py](../tests/unit/test_event_id_race.py) 4 用例（同任务 50 并发 / 跨任务并发独立 / discard 释放 / 重建锁），全部通过。
+
 ### P1-11 Metrics 全部空跑
 - **位置**：[src/worker/observability/metrics.py](../src/worker/observability/metrics.py)
 - **问题**：`inc_task_count` 等 helper 全仓 0 个 callsite，`/metrics` 永远空。
 - **方向**：在 queue（active_tasks/duration）、driver（hitl_wait/token）、sandbox（container_start_ms）关键节点接入。
+
+> **2026-05-18 修订**：该项已修复。callsite 接入：
+> - [src/worker/orchestrator/queue.py](../src/worker/orchestrator/queue.py) `_run_one`：进入槽位 `inc_active_tasks`，退出槽位（finally）`dec_active_tasks`；终态写入后调用 `inc_task_count(status)` + `observe_task_duration`；abort 路径额外 `inc_abort_count(reason)`
+> - [src/worker/sandbox/manager.py](../src/worker/sandbox/manager.py) `start_container`：包裹 docker SDK 调用观测 `observe_container_start(ms)`
+> - [src/worker/adapters/opencode/driver.py](../src/worker/adapters/opencode/driver.py) `_handle_permission` / `_handle_plan_approval`：在 `_wait_for_decision` 周围观测 `observe_hitl_wait(seconds)`
+>
+> 新增 [tests/unit/test_metrics_wiring.py](../tests/unit/test_metrics_wiring.py) 6 用例（completed / timed_out / aborted / failed 计数 + active_tasks 平衡 + render_prometheus 非空），全部通过。
 
 ### P1-12 SSE 实时阶段是 0.5s polling
 - **位置**：[src/worker/api/routes.py:218-269](../src/worker/api/routes.py#L218-L269)
@@ -117,6 +128,8 @@
 - **问题**：reject 在 opencode 中是单次拒绝，工具会再次 ask；driver 没设 reject 计数上限。
 - **方向**：N 次 reject（如 3）后自动 `_abort_event.set()`，并写一条 `mode_escalation_suggested` 事件。
 
+> **2026-05-18 修订**：该项已修复。driver 模块新增 `_REJECT_THRESHOLD = 3` + 实例字段 `self._reject_count`；`_handle_permission` 的 reject/revise 分支递增计数器，达到阈值后写入 `mode_escalation_suggested` 事件（`reason=reject_threshold_exceeded`）并调用 `_signal_abort` → 任务终态走 aborted。approve 重置计数器；显式 abort 直接走原 abort 路径不进入计数器。新增 [tests/unit/test_reject_threshold.py](../tests/unit/test_reject_threshold.py) 4 用例（3 连续 reject 触发 / 2 次不触发 / approve 重置 / 显式 abort 不计数），全部通过。
+
 ### P1-16 Queue 状态流转双写
 - **位置**：[src/worker/orchestrator/queue.py:124-125](../src/worker/orchestrator/queue.py#L124-L125)、[orchestrator.py:96](../src/worker/orchestrator/orchestrator.py#L96)
 - **问题**：queue 写 `starting_container`，orchestrator 又写 `preparing_workspace` 再写一次 `starting_container`。SSE 客户端会看到状态来回跳。
@@ -126,6 +139,8 @@
 - **位置**：[src/worker/main.py:69-89](../src/worker/main.py#L69-L89)
 - **问题**：reaper 只查容器；DB 里 status=`queued` 但还没起容器的任务在重启后既不会被入队也不会被标 failed。路线图 §H7 决策"标 failed(orphaned)"未对全部非终态状态生效。
 - **方向**：startup 时一次扫描所有非终态任务，按是否有容器 label 区分：有容器 → reap；无容器 → 直接标 failed(orphaned) + 写事件。
+
+> **2026-05-18 修订**：该项已修复。新增 [src/worker/orchestrator/recovery.py](../src/worker/orchestrator/recovery.py) `recover_orphaned_tasks(reaped_task_ids)`：扫 `list_non_terminal_tasks` 结果，跳过 reaper 已处理的，剩余统一标 `failed` + 写 `task_failed` 事件（reason=orphaned_after_worker_restart, error_type=WorkerRestartOrphan）。`main.py` lifespan 在 reaper 之后调用本函数。新增 [tests/unit/test_orphan_recovery.py](../tests/unit/test_orphan_recovery.py) 6 用例（queued/多状态/终态不动/reaped 跳过/空 DB/边缘场景），全部通过。
 
 ### P1-18 `git_subpath` 处理导致 cleanup 残留
 - **位置**：[src/worker/workspace/handler.py:111-120](../src/worker/workspace/handler.py#L111-L120)

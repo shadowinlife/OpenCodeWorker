@@ -67,6 +67,7 @@ async def lifespan(app: FastAPI):
     logger.info("SQLite initialized: %s", settings.db_path)
 
     # Phase 2: Reaper — 清理上次 Worker 崩溃遗留的孤儿容器
+    reaped: list[str] = []
     try:
         from worker.sandbox.manager import reap_orphaned_containers
         reaped = await reap_orphaned_containers()
@@ -86,6 +87,19 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         # Docker 不可用时（开发环境无 Docker）不阻塞启动
         logger.warning("reaper skipped (Docker unavailable?): %s", exc)
+
+    # P1-17：兜底扫描，把 reaper 漏掉的非终态任务（如 status='queued' 但
+    # 容器从未起）统一标记为 failed(orphaned)，避免在 DB 中永久卡死。
+    try:
+        from worker.orchestrator.recovery import recover_orphaned_tasks
+        extra = await recover_orphaned_tasks(reaped)
+        if extra:
+            logger.info(
+                "orphan recovery: %d non-terminal task(s) marked failed",
+                len(extra),
+            )
+    except Exception as exc:
+        logger.warning("orphan recovery skipped: %s", exc)
 
     # Phase 2: 注册真实 Orchestrator 到任务队列
     try:

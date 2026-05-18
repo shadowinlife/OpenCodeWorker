@@ -26,12 +26,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 
 import docker
 import docker.errors
 from docker.models.containers import Container
+
+from worker.observability import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -137,9 +140,15 @@ async def start_container(spec: ContainerSpec) -> Container:
 
     此函数在 asyncio 事件循环中通过 run_in_executor 调用阻塞的 Docker SDK，
     避免阻塞事件循环。
+
+    P1-11：测量启动耗时（含 Docker SDK 阻塞调用 + 网络解析），写入
+    `worker_container_start_ms` summary。
     """
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _start_container_sync, spec)
+    t0 = time.monotonic()
+    container = await loop.run_in_executor(None, _start_container_sync, spec)
+    metrics.observe_container_start((time.monotonic() - t0) * 1000.0)
+    return container
 
 
 def _start_container_sync(spec: ContainerSpec) -> Container:

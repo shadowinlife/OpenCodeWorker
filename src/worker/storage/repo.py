@@ -13,6 +13,7 @@ Storage 仓库层：封装 SQLite 表的有类型 CRUD 操作。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Optional
@@ -121,17 +122,61 @@ async def delete_task(db: aiosqlite.Connection, task_id: str) -> bool:
     return cur.rowcount > 0
 
 
+async def list_non_terminal_tasks(
+    db: aiosqlite.Connection,
+) -> list[tuple[str, Optional[str]]]:
+    """列出所有处于非终态的任务，返回 (task_id, container_id) 对。
+
+    P1-17：worker 重启后用于扫描需要恢复的孤儿任务。reaper 只能清理有容器
+    关联的任务，本函数包含状态为 `queued` / `preparing_workspace` 等无容器
+    的任务，调用方需要再过滤掉 reaper 已处理过的 task_ids。
+    """
+    from worker.contract.task import TERMINAL_STATUSES
+
+    placeholders = ", ".join("?" * len(TERMINAL_STATUSES))
+    terminal_values = [s.value for s in TERMINAL_STATUSES]
+    async with db.execute(
+        f"SELECT id, container_id FROM tasks "
+        f"WHERE status NOT IN ({placeholders}) "
+        f"ORDER BY created_at ASC",
+        terminal_values,
+    ) as cur:
+        rows = await cur.fetchall()
+    return [(row["id"], row["container_id"]) for row in rows]
+
+
 # ---------------------------------------------------------------------------
 # Events — append-only 事件流。不允许修改和删除
 # ---------------------------------------------------------------------------
 
+# P1-10: 每任务一把 asyncio.Lock，串行化 _next_event_id + INSERT
+# 修复前并发协程（_consume_sse / _handle_permission）可能读到相同 MAX(event_id)
+# → 后插入者撞 UNIQUE 约束 → IntegrityError → queue 误标 task_failed
+#
+# 单线程 asyncio 下读写 _event_locks dict 无 await 边界，无需 meta-lock；
+# 任务终态后由 discard_task_locks() 释放，避免 dict 长期增长
+_event_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_event_lock(task_id: str) -> asyncio.Lock:
+    """返回 task_id 专属锁，首次访问时创建。"""
+    lock = _event_locks.get(task_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _event_locks[task_id] = lock
+    return lock
+
+
+def discard_task_locks(task_id: str) -> None:
+    """释放任务级 event 锁（终态写入完成后调用，防止 dict 长期增长）。"""
+    _event_locks.pop(task_id, None)
+
+
 async def _next_event_id(db: aiosqlite.Connection, task_id: str) -> int:
     """获取任务的下一个序号。
 
-    多个协程并发写入时，不同协程可能读到相同 MAX(event_id)。
-    UNIQUE(task_id, event_id) 约束保证冖冲行抛出错误而非静默丢数据。
-    Phase 1 为单进程单取队，暂时不会冖冲；如未来改为并发调度
-    需加 SELECT ... FOR UPDATE 或换用乐观锁重试。
+    必须在 `_get_event_lock(task_id)` 持有期内调用，
+    否则与 INSERT 之间的 await 边界会让两协程读到相同 MAX(event_id)。
     """
     async with db.execute(
         "SELECT COALESCE(MAX(event_id), 0) + 1 FROM task_events WHERE task_id = ?",
@@ -151,18 +196,23 @@ async def insert_event(
 
     返回的 TaskEvent 可直接用于内存中的 SSE 广播，
     无需二次读取 DB。
+
+    P1-10：通过 per-task `asyncio.Lock` 串行化 SELECT MAX + INSERT，
+    避免同任务并发协程撞 UNIQUE(task_id, event_id) 约束。
     """
-    event_id = await _next_event_id(db, task_id)
-    now = time.time()
-    payload_json = json.dumps(payload or {})
-    await db.execute(
-        """
-        INSERT INTO task_events (event_id, task_id, kind, payload_json, ts)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (event_id, task_id, kind.value, payload_json, now),
-    )
-    await db.commit()
+    lock = _get_event_lock(task_id)
+    async with lock:
+        event_id = await _next_event_id(db, task_id)
+        now = time.time()
+        payload_json = json.dumps(payload or {})
+        await db.execute(
+            """
+            INSERT INTO task_events (event_id, task_id, kind, payload_json, ts)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (event_id, task_id, kind.value, payload_json, now),
+        )
+        await db.commit()
     return TaskEvent(event_id=event_id, task_id=task_id, kind=kind,
                      payload=payload or {}, ts=now, cursor=event_id)
 

@@ -21,14 +21,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Awaitable, Callable, Optional
 
 from worker.config import get_settings
 from worker.contract.event import TaskEventKind
 from worker.contract.exceptions import TaskAbortedError, TaskTimedOutError
 from worker.contract.task import TaskStatus
+from worker.observability import metrics
 from worker.storage.db import get_db
-from worker.storage.repo import insert_event, update_task_status
+from worker.storage.repo import discard_task_locks, insert_event, update_task_status
 
 logger = logging.getLogger(__name__)
 
@@ -127,45 +129,69 @@ async def _run_one(task_id: str) -> None:
         logger.info("task %s: starting execution slot", task_id)
         await update_task_status(db, task_id, TaskStatus.starting_container)
         await insert_event(db, task_id, TaskEventKind.task_started)
+
+        # P1-11：进入活跃槽位 + 起始时间，用于指标统计
+        metrics.inc_active_tasks()
+        task_start_monotonic = time.monotonic()
+
         try:
-            if _task_executor is not None:
-                await _task_executor(task_id)
-            else:
-                # ── Phase 1 stub ──────────────────────────────────────────
-                # 没有真实执行器时，模拟一个成功完成的任务。
-                # 此分支在 Phase 2 注册 executor 后永远不会执行。
-                logger.warning(
-                    "task %s: executor not registered, completing as stub", task_id
+            try:
+                if _task_executor is not None:
+                    await _task_executor(task_id)
+                else:
+                    # ── Phase 1 stub ──────────────────────────────────────
+                    # 没有真实执行器时，模拟一个成功完成的任务。
+                    # 此分支在 Phase 2 注册 executor 后永远不会执行。
+                    logger.warning(
+                        "task %s: executor not registered, completing as stub",
+                        task_id,
+                    )
+                    await update_task_status(db, task_id, TaskStatus.completed)
+                    await insert_event(db, task_id, TaskEventKind.task_completed)
+                # 成功路径：executor 自己写了 task_completed
+                metrics.inc_task_count(TaskStatus.completed.value)
+                metrics.observe_task_duration(time.monotonic() - task_start_monotonic)
+            except TaskTimedOutError as exc:
+                logger.warning("task %s timed out: %s", task_id, exc)
+                await _write_terminal(
+                    task_id,
+                    TaskStatus.timed_out,
+                    TaskEventKind.task_timed_out,
+                    {"timeout_sec": exc.timeout_sec, "message": str(exc)},
                 )
-                await update_task_status(db, task_id, TaskStatus.completed)
-                await insert_event(db, task_id, TaskEventKind.task_completed)
-        except TaskTimedOutError as exc:
-            logger.warning("task %s timed out: %s", task_id, exc)
-            await _write_terminal(
-                task_id,
-                TaskStatus.timed_out,
-                TaskEventKind.task_timed_out,
-                {"timeout_sec": exc.timeout_sec, "message": str(exc)},
-            )
-        except TaskAbortedError as exc:
-            logger.info("task %s aborted (reason=%s): %s", task_id, exc.reason, exc)
-            payload: dict = {"reason": exc.reason, "message": str(exc)}
-            if exc.decision_id is not None:
-                payload["decision_id"] = exc.decision_id
-            await _write_terminal(
-                task_id,
-                TaskStatus.aborted,
-                TaskEventKind.task_aborted,
-                payload,
-            )
-        except Exception as exc:
-            logger.exception("task %s execution failed: %s", task_id, exc)
-            await _write_terminal(
-                task_id,
-                TaskStatus.failed,
-                TaskEventKind.task_failed,
-                {"error": str(exc), "error_type": type(exc).__name__},
-            )
+                metrics.inc_task_count(TaskStatus.timed_out.value)
+                metrics.observe_task_duration(time.monotonic() - task_start_monotonic)
+            except TaskAbortedError as exc:
+                logger.info("task %s aborted (reason=%s): %s",
+                            task_id, exc.reason, exc)
+                payload: dict = {"reason": exc.reason, "message": str(exc)}
+                if exc.decision_id is not None:
+                    payload["decision_id"] = exc.decision_id
+                await _write_terminal(
+                    task_id,
+                    TaskStatus.aborted,
+                    TaskEventKind.task_aborted,
+                    payload,
+                )
+                metrics.inc_task_count(TaskStatus.aborted.value)
+                metrics.inc_abort_count(exc.reason or "unknown")
+                metrics.observe_task_duration(time.monotonic() - task_start_monotonic)
+            except Exception as exc:
+                logger.exception("task %s execution failed: %s", task_id, exc)
+                await _write_terminal(
+                    task_id,
+                    TaskStatus.failed,
+                    TaskEventKind.task_failed,
+                    {"error": str(exc), "error_type": type(exc).__name__},
+                )
+                metrics.inc_task_count(TaskStatus.failed.value)
+                metrics.observe_task_duration(time.monotonic() - task_start_monotonic)
+        finally:
+            # P1-10：成功路径（executor 自己写 task_completed，不走 _write_terminal）
+            # 也要释放 per-task event 锁，避免 _event_locks dict 长期增长
+            discard_task_locks(task_id)
+            # P1-11：退出活跃槽位
+            metrics.dec_active_tasks()
 
 
 async def _write_terminal(
@@ -174,7 +200,10 @@ async def _write_terminal(
     event_kind: TaskEventKind,
     payload: dict,
 ) -> None:
-    """写入终态状态 + 终态事件，吞下任何 DB 错误（最后一道防线）。"""
+    """写入终态状态 + 终态事件，吞下任何 DB 错误（最后一道防线）。
+
+    P1-10：终态写入完成后释放 per-task event 锁，避免 _event_locks dict 长期增长。
+    """
     try:
         db = await get_db()
         await update_task_status(db, task_id, status)
@@ -185,3 +214,5 @@ async def _write_terminal(
             "task %s: failed to write terminal event %s",
             task_id, event_kind.value,
         )
+    finally:
+        discard_task_locks(task_id)

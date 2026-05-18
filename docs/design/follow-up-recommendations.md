@@ -45,6 +45,8 @@
 
 来自 [docs/code-review-2026-05-14.md](../code-review-2026-05-14.md) 的 P1 列表：P1-9（WAL pragma）/ P1-10（event_id race）/ P1-11（metrics callsite）/ P1-12（SSE polling）/ P1-15（reject 死循环）/ P1-16~19。约 1 周工作量。
 
+> **2026-05-18 进度**：已完成最小可上线集合 — P1-9 / P1-10 / P1-11 / P1-15 / P1-17。详情见 [docs/code-review-2026-05-14.md](../code-review-2026-05-14.md) 各项的"修订"块。剩余 P1-12（SSE polling）/ P1-14（auto_approve）/ P1-16（状态双写）/ P1-18（workspace 残留）/ P1-19（artifact GC）待后续 sprint。
+
 ---
 
 ### 1.2 上游 Runtime 线

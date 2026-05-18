@@ -43,6 +43,7 @@ from worker.contract.decision import DecisionChoice, DecisionKind, DecisionReque
 from worker.contract.event import TaskEventKind
 from worker.contract.exceptions import TaskAbortedError, TaskTimedOutError
 from worker.contract.task import TaskMode, TaskRequest, TaskStatus
+from worker.observability import metrics
 from worker.storage.repo import (
     expire_decision,
     get_resolved_decision,
@@ -69,6 +70,12 @@ _HITL_POLL_INTERVAL = 2.0
 
 # 默认任务超时（resource_limits.timeout_sec 可覆盖）
 _DEFAULT_TIMEOUT_SEC = 1800
+
+# P1-15: 连续用户 reject 阈值。opencode 的 reject 是单次拒绝（工具会再 ask），
+# 没有计数上限会让 agent 与 reject 形成死循环直到 timeout。
+# 达到阈值后自动 abort 并发 mode_escalation_suggested 事件。
+# 计数仅累积**用户主动 reject**；approve 重置为 0；abort/timeout 走各自终态分支。
+_REJECT_THRESHOLD = 3
 
 
 class OpenCodeDriver:
@@ -106,6 +113,8 @@ class OpenCodeDriver:
         self._plan_text: Optional[str] = None
         # 最近一次 session.diff 内容（artifact 收集时使用）
         self._last_diff: list = []
+        # P1-15：连续 reject 计数，达到 _REJECT_THRESHOLD 时自动 abort 防死循环
+        self._reject_count: int = 0
 
         # 超时时间
         self.timeout_sec = _DEFAULT_TIMEOUT_SEC
@@ -467,8 +476,10 @@ class OpenCodeDriver:
         )
         await update_task_status(self.db, self.task_id, TaskStatus.awaiting_human)
 
-        # 轮询等待决策
+        # 轮询等待决策（P1-11：观测 HITL 等待耗时）
+        _hitl_t0 = time.monotonic()
         resolved = await self._wait_for_decision(decision_id, timeout_sec)
+        metrics.observe_hitl_wait(time.monotonic() - _hitl_t0)
 
         # 映射 choice → opencode response
         opencode_response = "reject"  # 保守默认
@@ -476,11 +487,36 @@ class OpenCodeDriver:
             choice = resolved.response.choice
             if choice == DecisionChoice.approve:
                 opencode_response = "once"
+                # P1-15：approve 重置连续 reject 计数
+                self._reject_count = 0
             elif choice == DecisionChoice.abort:
                 self._signal_abort("permission_rejected", decision_id)
                 opencode_response = "reject"
             else:
+                # reject / revise：用户拒绝本次请求
                 opencode_response = "reject"
+                self._reject_count += 1
+                # P1-15：累积达到阈值即 abort，发 mode_escalation_suggested 提示上游
+                if self._reject_count >= _REJECT_THRESHOLD:
+                    await insert_event(
+                        self.db, self.task_id,
+                        TaskEventKind.mode_escalation_suggested,
+                        {
+                            "reason": "reject_threshold_exceeded",
+                            "reject_count": self._reject_count,
+                            "threshold": _REJECT_THRESHOLD,
+                            "suggestion": (
+                                "Repeated rejects detected; aborting to break loop. "
+                                "Consider resubmitting with a different mode or "
+                                "scope-limited permissions."
+                            ),
+                        },
+                    )
+                    self._signal_abort("reject_threshold_exceeded", decision_id)
+                    logger.warning(
+                        "task %s: reject threshold reached (%d/%d), auto-aborting",
+                        self.task_id, self._reject_count, _REJECT_THRESHOLD,
+                    )
         else:
             # 超时：标记 DB decision 为 timed_out，发 hitl_timeout 事件，按策略处理
             await expire_decision(self.db, decision_id)
@@ -579,8 +615,10 @@ class OpenCodeDriver:
         )
         await update_task_status(self.db, self.task_id, TaskStatus.awaiting_human)
 
-        # 轮询等待决策
+        # 轮询等待决策（P1-11：观测 HITL 等待耗时）
+        _hitl_t0 = time.monotonic()
         resolved = await self._wait_for_decision(decision_id, timeout_sec)
+        metrics.observe_hitl_wait(time.monotonic() - _hitl_t0)
 
         choice_val: Optional[str] = None
         if resolved is not None and resolved.response is not None:
