@@ -400,14 +400,17 @@ async def insert_artifact(
     artifact: Artifact,
     file_path: Optional[str] = None,
 ) -> None:
+    """登记产物元数据。W2-1：metadata 字段以 JSON 字符串持久化。"""
+    metadata_json = json.dumps(artifact.metadata or {})
     await db.execute(
         """
-        INSERT INTO artifacts (id, task_id, type, filename, file_path, size, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO artifacts (id, task_id, type, filename, file_path, size,
+                               created_at, expires_at, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (artifact.artifact_id, artifact.task_id, artifact.type.value,
          artifact.filename, file_path, artifact.size,
-         artifact.created_at, artifact.expires_at),
+         artifact.created_at, artifact.expires_at, metadata_json),
     )
     await db.commit()
 
@@ -417,7 +420,7 @@ async def list_artifacts(
     task_id: str,
 ) -> list[Artifact]:
     async with db.execute(
-        "SELECT id, type, filename, size, created_at, expires_at "
+        "SELECT id, type, filename, size, created_at, expires_at, metadata "
         "FROM artifacts WHERE task_id = ? ORDER BY created_at ASC",
         (task_id,),
     ) as cur:
@@ -432,9 +435,21 @@ async def list_artifacts(
             size=row["size"],
             created_at=row["created_at"],
             expires_at=row["expires_at"],
+            metadata=_decode_metadata(row["metadata"]) if "metadata" in row.keys() else {},
         )
         for row in rows
     ]
+
+
+def _decode_metadata(raw: Optional[str]) -> dict:
+    """安全解析 artifacts.metadata 列；非法 JSON 视为空 dict 不抛错。"""
+    if not raw:
+        return {}
+    try:
+        decoded = json.loads(raw)
+        return decoded if isinstance(decoded, dict) else {}
+    except (ValueError, TypeError):
+        return {}
 
 
 async def get_artifact_path(

@@ -27,7 +27,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import aiosqlite
 
@@ -37,6 +37,13 @@ from worker.adapters.opencode.event_stream import (
     extract_permission_request,
     is_session_idle,
     normalize_opencode_event,
+)
+from worker.adapters.opencode.interceptors import (
+    EventInterceptor,
+    InterceptorArtifact,
+    InterceptorEvent,
+    InterceptorRunner,
+    TerminalSignal,
 )
 from worker.config import get_settings
 from worker.contract.artifact import Artifact, ArtifactType
@@ -89,13 +96,22 @@ class OpenCodeDriver:
         host_port: int,
         container_env: dict[str, str],
         db: aiosqlite.Connection,
+        interceptors: Sequence[EventInterceptor] = (),
     ):
+        """构造 driver。
+
+        Args:
+            interceptors: W2-1 — 事件拦截器列表，默认空（行为与 W2-1 之前完全一致）。
+                          driver 通过 InterceptorRunner 隔离每个拦截器的错误，
+                          单个抛错不影响 SSE 主循环或兄弟拦截器。
+        """
         self.task_id = task_id
         self.request = request
         self.host_port = host_port
         self.password = container_env.get("OPENCODE_SERVER_PASSWORD", "")
         self.db = db
         self.settings = get_settings()
+        self._runner = InterceptorRunner(interceptors)
 
         # 状态
         self.client: Optional[OpenCodeClient] = None
@@ -131,6 +147,9 @@ class OpenCodeDriver:
             - TaskTimedOutError: 超过 timeout_sec → task_timed_out 终态
             - TaskAbortedError:  HITL 决策中止/拒绝 → task_aborted 终态
             - 其它 Exception:    内部错误 → task_failed 终态
+
+        W2-1：在 finally 块中先于 client 清理触发拦截器终态分发 + flush。
+              拦截器异常被 InterceptorRunner 隔离，不影响终态语义。
         """
         from worker.observability.logging import set_correlation, clear_correlation
         set_correlation(task_id=self.task_id)
@@ -141,6 +160,9 @@ class OpenCodeDriver:
             password=self.password,
         )
         self.client = client
+        # W2-1：终态信号默认 completed；下面的 except 分支根据异常类型覆盖
+        final_status: TaskStatus = TaskStatus.completed
+        final_reason: Optional[str] = None
         try:
             async with asyncio.timeout(self.timeout_sec):
                 await self._run_inner()
@@ -148,8 +170,24 @@ class OpenCodeDriver:
             logger.warning("task %s: timed out after %ds", self.task_id, self.timeout_sec)
             if self.session_id:
                 await client.abort_session(self.session_id)
+            final_status = TaskStatus.timed_out
+            final_reason = "timeout"
             raise TaskTimedOutError(timeout_sec=self.timeout_sec)
+        except TaskAbortedError as exc:
+            final_status = TaskStatus.aborted
+            final_reason = exc.reason
+            raise
+        except TaskTimedOutError:
+            final_status = TaskStatus.timed_out
+            final_reason = "timeout"
+            raise
+        except Exception as exc:  # noqa: BLE001 — 显式分类落 final_status
+            final_status = TaskStatus.failed
+            final_reason = type(exc).__name__
+            raise
         finally:
+            # W2-1：终态信号分发 + flush；任何错误均由 runner 内部隔离
+            await self._dispatch_terminal_and_flush(final_status, final_reason)
             if self.session_id:
                 await client.delete_session(self.session_id)
             await client.aclose()
@@ -389,6 +427,19 @@ class OpenCodeDriver:
 
                 # 归一化并写入 Worker 事件
                 norm = normalize_opencode_event(raw_event)
+
+                # W2-1：分发给拦截器（在 normalize 之后、insert_event 之前）
+                # 即使 norm 为 None（心跳/sync）也允许拦截器看 raw_payload
+                # — 但当前 driver 在 norm is None 时 continue，故只在 norm 非 None
+                # 时通知拦截器。后续 W2-4 若需要拿到非归一化事件可再扩展。
+                if norm is not None:
+                    await self._dispatch_to_interceptors(
+                        normalized_kind=norm.kind,
+                        normalized_payload=dict(norm.payload),
+                        raw_type=norm.raw_type,
+                        raw_payload=dict(raw_event.get("payload") or {}),
+                    )
+
                 if norm is None:
                     continue
 
@@ -559,13 +610,20 @@ class OpenCodeDriver:
         # 回传 opencode
         try:
             await self.client.respond_permission(session_id, permission_id, opencode_response)
+            decision_payload = {
+                "decision_id": decision_id,
+                "choice": opencode_response,
+                "permission_id": permission_id,
+            }
             await insert_event(
                 self.db, self.task_id, TaskEventKind.decision_received,
-                {
-                    "decision_id": decision_id,
-                    "choice": opencode_response,
-                    "permission_id": permission_id,
-                },
+                decision_payload,
+            )
+            # W2-1：合成 decision_received 事件分发给拦截器
+            await self._dispatch_to_interceptors(
+                normalized_kind=TaskEventKind.decision_received.value,
+                normalized_payload=decision_payload,
+                raw_type="<synthesized:decision_received>",
             )
         except Exception as exc:
             logger.warning(
@@ -657,9 +715,16 @@ class OpenCodeDriver:
                 choice_val,
             )
 
+        decision_payload = {"decision_id": decision_id, "choice": choice_val}
         await insert_event(
             self.db, self.task_id, TaskEventKind.decision_received,
-            {"decision_id": decision_id, "choice": choice_val},
+            decision_payload,
+        )
+        # W2-1：plan_approval 决策合成事件分发给拦截器
+        await self._dispatch_to_interceptors(
+            normalized_kind=TaskEventKind.decision_received.value,
+            normalized_payload=decision_payload,
+            raw_type="<synthesized:decision_received>",
         )
 
         if choice_val == DecisionChoice.approve.value:
@@ -825,6 +890,131 @@ class OpenCodeDriver:
             self._abort_decision_id = decision_id
         self._abort_event.set()
 
+    # ── W2-1: 拦截器分发辅助 ──────────────────────────────────────────────────
+
+    async def _dispatch_to_interceptors(
+        self,
+        normalized_kind: Optional[str],
+        normalized_payload: Optional[dict[str, Any]],
+        raw_type: str,
+        raw_payload: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """构造 InterceptorEvent 并分发给 runner。
+
+        decision/permission 路径合成事件时，raw_type 以 ``<synthesized:...>`` 前缀
+        标记，便于拦截器按需过滤。"""
+        if not self._runner.interceptors:
+            return
+        ic_event = InterceptorEvent(
+            task_id=self.task_id,
+            session_id=self.session_id,
+            normalized_kind=normalized_kind,
+            normalized_payload=normalized_payload,
+            raw_type=raw_type,
+            raw_payload=raw_payload or {},
+            received_at=time.monotonic(),
+        )
+        await self._runner.dispatch_event(ic_event)
+
+    async def _dispatch_terminal_and_flush(
+        self, status: TaskStatus, reason: Optional[str],
+    ) -> None:
+        """终态分发 + flush 收集 + 标准登记产物。
+
+        三段都包在 try/except 中：拦截器侧任何故障都不传染到 driver 主路径。
+        """
+        if not self._runner.interceptors:
+            return
+        signal = TerminalSignal(
+            task_id=self.task_id,
+            session_id=self.session_id,
+            status=status.value,
+            reason=reason,
+            ended_at=time.monotonic(),
+        )
+        try:
+            await self._runner.dispatch_terminal(signal)
+        except Exception:  # noqa: BLE001 — runner 内部已隔离；这里再做一层防御
+            logger.exception("task %s: terminal dispatch outer failure", self.task_id)
+        try:
+            artifacts = await self._runner.collect_artifacts()
+        except Exception:  # noqa: BLE001
+            logger.exception("task %s: collect_artifacts outer failure", self.task_id)
+            return
+        for art in artifacts:
+            try:
+                await self._register_interceptor_artifact(art)
+            except Exception:
+                logger.exception(
+                    "task %s: register interceptor artifact failed (%s)",
+                    self.task_id, art.filename,
+                )
+
+    async def _register_interceptor_artifact(
+        self, art: InterceptorArtifact,
+    ) -> None:
+        """走标准 insert_artifact + artifact_ready 路径登记拦截器产物。
+
+        校验：
+            1. local_path 必须落在 settings.artifacts_dir / task_id 子树内
+               （复用 P0-8 同款防越权约束）
+            2. 文件必须存在（否则 stat 抛 → 上层 catch 后跳过）
+            3. ArtifactType 必须合法
+        """
+        artifacts_root = (self.settings.artifacts_dir / self.task_id).resolve()
+        target = Path(art.local_path).resolve()
+        try:
+            target.relative_to(artifacts_root)
+        except ValueError:
+            logger.error(
+                "task %s: interceptor artifact rejected (path escape): %s outside %s",
+                self.task_id, target, artifacts_root,
+            )
+            return
+        if not target.exists():
+            logger.error(
+                "task %s: interceptor artifact rejected (file missing): %s",
+                self.task_id, target,
+            )
+            return
+        try:
+            artifact_type = ArtifactType(art.artifact_type)
+        except ValueError:
+            logger.error(
+                "task %s: interceptor artifact rejected (unknown type): %r",
+                self.task_id, art.artifact_type,
+            )
+            return
+
+        size = art.size_bytes if art.size_bytes is not None else target.stat().st_size
+        now = time.time()
+        retention_secs = self.settings.artifact_retention_days * 86400
+        artifact_id = str(uuid.uuid4())
+        artifact = Artifact(
+            artifact_id=artifact_id,
+            task_id=self.task_id,
+            type=artifact_type,
+            filename=art.filename,
+            size=size,
+            created_at=now,
+            expires_at=now + retention_secs,
+            metadata=dict(art.metadata),
+        )
+        await insert_artifact(self.db, artifact, file_path=str(target))
+        await insert_event(
+            self.db, self.task_id, TaskEventKind.artifact_ready,
+            {
+                "artifact_id": artifact_id,
+                "type": artifact_type.value,
+                "filename": art.filename,
+                "metadata": dict(art.metadata),
+            },
+        )
+        logger.info(
+            "task %s: interceptor artifact registered (%s, %d bytes)",
+            self.task_id, art.filename, size,
+        )
+
     # ── P1-14: HITL auto_approve ────────────────────────────────────────────
 
     def _match_auto_approve(
@@ -868,16 +1058,23 @@ class OpenCodeDriver:
             "task %s: auto-approved permission %s (tool=%s, pattern=%s)",
             self.task_id, permission_id, tool, matched_pattern,
         )
+        decision_payload = {
+            "decision_id": decision_id,
+            "choice": "once",
+            "permission_id": permission_id,
+            "auto_approved": True,
+            "matched_pattern": matched_pattern,
+            "tool": tool,
+        }
         await insert_event(
             self.db, self.task_id, TaskEventKind.decision_received,
-            {
-                "decision_id": decision_id,
-                "choice": "once",
-                "permission_id": permission_id,
-                "auto_approved": True,
-                "matched_pattern": matched_pattern,
-                "tool": tool,
-            },
+            decision_payload,
+        )
+        # W2-1：合成 decision_received 事件分发给拦截器
+        await self._dispatch_to_interceptors(
+            normalized_kind=TaskEventKind.decision_received.value,
+            normalized_payload=decision_payload,
+            raw_type="<synthesized:decision_received>",
         )
         # auto-approve 等价于用户 approve，重置 reject 计数
         self._reject_count = 0

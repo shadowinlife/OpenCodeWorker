@@ -178,6 +178,22 @@ class PermissionTemplate(str, Enum):
     custom = "custom"
 
 
+class InterceptorConfig(BaseModel):
+    """W2-1：单个拦截器的实例化配置。
+
+    上游通过 OpencodeProfile.interceptors[] 声明性地启用拦截器。
+    name 必须事先通过 worker.adapters.opencode.interceptors.register_factory
+    注册；options 透传给工厂函数。
+
+    Attributes:
+        name:    工厂注册名（kebab-case，如 "conversations" / "backtest" /
+                 "mcp-field-recorder"）；未注册的名字会被静默跳过
+        options: 工厂初始化参数；任意 JSON 兼容字典
+    """
+    name: str
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
 class OpencodeProfile(BaseModel):
     """传递给沙箱内 opencode serve 进程的配置参数。
 
@@ -214,6 +230,8 @@ class OpencodeProfile(BaseModel):
     permission_overrides: dict[str, Any] = Field(default_factory=dict)
     providers: list[str] = Field(default_factory=list)
     provider_extra_config: dict[str, dict] = Field(default_factory=dict)
+    # W2-1：拦截器声明列表；空时 driver 不创建任何拦截器，行为与 W2-1 之前完全一致
+    interceptors: list[InterceptorConfig] = Field(default_factory=list)
 
 
 class EnvPolicy(BaseModel):

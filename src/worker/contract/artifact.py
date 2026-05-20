@@ -15,9 +15,9 @@ data/artifacts/<task_id>/ 目录下，并在 artifacts 表中记录元数据。
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ArtifactType(str, Enum):
@@ -81,6 +81,9 @@ class Artifact(BaseModel):
         created_at:   产物注册时间（Unix 时间戳，秒）
         expires_at:   过期时间（Unix 时间戳，秒），超过后清理任务会删除文件
         download_url: 仅在 API 响应中动态填充，DB 中存 None
+        metadata:    自定义元数据（W2 拦截器登记产物时使用），JSON 字典；
+                     默认空 dict。持久化为 artifacts.metadata 列（TEXT，
+                     JSON 序列化）。
     """
     artifact_id: str
     task_id: str
@@ -91,3 +94,5 @@ class Artifact(BaseModel):
     expires_at: Optional[float] = None
     # 动态生成，不持久化到 DB（由 API 层在响应序列化时填入）
     download_url: Optional[str] = None
+    # W2-1：拦截器登记产物时携带的元数据，原样持久化到 artifacts.metadata 列
+    metadata: dict[str, Any] = Field(default_factory=dict)

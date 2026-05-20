@@ -223,15 +223,24 @@ async def _drive_opencode(
     超时或 abort 时抛出 RuntimeError，由 queue._run_one 写入 task_failed 事件。
     """
     from worker.adapters.opencode.driver import OpenCodeDriver
+    from worker.adapters.opencode.interceptors import build_interceptors_from_config
     from worker.storage.db import get_db
 
     db = await get_db()
+    # W2-1：根据 opencode_profile.interceptors 实例化拦截器列表
+    # 未注册的工厂名被静默跳过；拦截器构造异常向上抛 → task 进 failed 终态
+    interceptor_configs = (
+        request.opencode_profile.interceptors
+        if request.opencode_profile else []
+    )
+    interceptors = build_interceptors_from_config(interceptor_configs)
     driver = OpenCodeDriver(
         task_id=task_id,
         request=request,
         host_port=host_port,
         container_env=container_env,
         db=db,
+        interceptors=interceptors,
     )
     await driver.run()
 

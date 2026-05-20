@@ -83,11 +83,29 @@ CREATE TABLE IF NOT EXISTS artifacts (
     file_path  TEXT,
     size       INTEGER,
     created_at REAL NOT NULL,
-    expires_at REAL
+    expires_at REAL,
+    metadata   TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_task
     ON artifacts (task_id);
 """
+
+
+async def _migrate_artifacts_metadata(conn: aiosqlite.Connection) -> None:
+    """W2-1: 老 DB 升级 —— 若 artifacts 表无 metadata 列，则 ALTER 添加。
+
+    SQLite 的 CREATE TABLE IF NOT EXISTS 不会修改既有表结构，因此
+    旧库（pre-W2-1）需要显式 ALTER。新库走 _DDL 直接含 metadata 列，
+    本函数为 no-op。
+    """
+    async with conn.execute("PRAGMA table_info(artifacts)") as cur:
+        cols = await cur.fetchall()
+    has_metadata = any(row["name"] == "metadata" for row in cols)
+    if not has_metadata:
+        await conn.execute(
+            "ALTER TABLE artifacts ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
+        )
+        await conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +135,10 @@ async def init_db(db_path: Path) -> aiosqlite.Connection:
 
     await conn.executescript(_DDL)
     await conn.commit()
+
+    # W2-1: 老 DB 兼容 —— 补 artifacts.metadata 列
+    await _migrate_artifacts_metadata(conn)
+
     _connection = conn
     return conn
 
