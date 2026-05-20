@@ -82,6 +82,25 @@ def build_interceptors_from_config(
     return out
 
 
+# ── 内置工厂注册 ────────────────────────────────────────────────────────────
+# import 此包即注册下列工厂；上游通过 InterceptorConfig.name 引用。
+# 工厂期不接受 Python callable（只能从 JSON 配置走），如 summarize_callback
+# 这类需要 callable 的能力可由上游派生子类或在测试时直接 new ConversationsWriter。
+def _register_builtin_factories() -> None:
+    from worker.adapters.opencode.interceptors.conversations import (
+        ConversationsWriter,
+    )
+
+    if "conversations" not in _FACTORIES:
+        register_factory(
+            "conversations",
+            lambda **opts: ConversationsWriter(**opts),
+        )
+
+
+_register_builtin_factories()
+
+
 __all__ = [
     "EventInterceptor",
     "InterceptorRunner",

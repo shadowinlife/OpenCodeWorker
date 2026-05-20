@@ -218,6 +218,14 @@ class OpenCodeDriver:
         # Step 2: 注入 TaskRequest.messages（历史上下文，noReply=True）
         if self.request.messages:
             await self._inject_messages(session_id)
+            # W2-2：注入消息不会反向触发 SSE 事件，需主动合成给拦截器
+            #       让 ConversationsWriter 等可以看见用户的初始 prompt。
+            for msg in self.request.messages:
+                await self._dispatch_to_interceptors(
+                    normalized_kind=f"initial_{msg.role}_message",
+                    normalized_payload={"role": msg.role, "content": msg.content},
+                    raw_type="<synthesized:initial_message>",
+                )
 
         # Step 3: 按 mode 决定 agent 并更新状态
         mode = self.request.mode
