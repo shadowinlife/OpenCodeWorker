@@ -234,6 +234,111 @@ PYTHONPATH=src \
 
 ---
 
+## `opencode_profile` 配置
+
+`TaskRequest.opencode_profile` 透传给沙箱内 `opencode serve`，并控制 Worker 侧的可选 SSE 拦截器（W2）。
+
+### 基础字段（模型 / 权限 / Provider）
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `model` | `anthropic/claude-opus-4-5` | `<provider>/<model-id>`；非法值由 opencode 启动时报错 |
+| `permission_template` | `plan_first_default` | `plan_first_default` / `direct_execute_default` / `custom` |
+| `permission_overrides` | `{}` | 按 opencode 工具名细粒度覆盖，例：`{"bash":"allow","write_file":"deny"}` |
+| `providers` | `[]` | 需在 opencode config 中显式声明的 provider 名 |
+| `provider_extra_config` | `{}` | 每个 provider 的扩展配置（如自定义 `baseURL`） |
+
+### `interceptors[]` — Worker SSE 拦截器声明（W2）
+
+`opencode_profile.interceptors` 是一组声明式条目：`{name, options}`。Worker 在创建 driver 时按 `name` 查 `register_factory` 注册中心，用 `options` 透传到拦截器构造函数。未注册的 `name` 被静默跳过，便于上游灰度。
+
+内置工厂（import 拦截器包即注册）：
+
+#### `conversations` — 对话流落盘（ConversationsWriter）
+
+把 SSE 事件序列化为 `<task_id>/conversations/{ISO8601}-{slug}.jsonl`，内置 API key / Bearer / ID 等敏感串脱敏。
+
+| `options` 字段 | 默认值 | 说明 |
+|---|---|---|
+| `max_content_chars` | `32768` | 单条 message content 上限；超出截断并打 `truncated` 标记 |
+| `max_messages` | `2000` | 总条数上限；FIFO 截断 + 保留头部 sentinel |
+| `slug_prefix` | `"untitled"` | fallback slug 前缀（`<prefix>-<6char>`），上游可改为业务标签 |
+
+`summarize_callback` 接受一个 Python callable（用 `messages` 算 3~4 词 slug），**不可** 通过 JSON 配置传入。需要时上游应自定义子类 + `register_factory("conversations-with-summary", ...)`。当前 worker 内置实现走 fallback slug 路径。
+
+#### `backtest` — 回测目录归档（BacktestInterceptor）
+
+监听匹配 `tool_pattern` 的 `tool_call_finished`，把 `args.run_dir` 整目录复制到 `<task_id>/backtests/{ISO8601}-{label}/`，终态写汇总 `backtests/index.json`。
+
+| `options` 字段 | 默认值 | 说明 |
+|---|---|---|
+| `tool_pattern` | `"*.backtest"` | `fnmatch` 风格，匹配 `tool_call_started.tool`；上游显式注入业务相关 pattern |
+| `run_dir_key` | `"run_dir"` | 从 tool args 读取源目录的 key |
+| `label_prefix` | `"iter"` | 自动 label 形如 `iter-1` / `iter-2`；override label 走 `raw_payload.part.metadata.backtest_label`，需匹配 `^[a-z0-9][a-z0-9-]{2,40}$` |
+| `workspace_root` | `null` | 相对 `run_dir` 的解析根；为 `null` 时相对路径直接跳过 |
+| `max_pending_calls` | `512` | `tool_use_id` 暂存上限，溢出 FIFO 丢弃 |
+
+#### `mcp-fields` — MCP 字段画像（McpFieldRecorder）
+
+聚合所有 `tool_call_finished`，按 `(mcp_name, tool_name)` 记录 `required_input_fields`（取 args top-level keys）与 `required_output_fields`（取上游 LLM 写到 `raw_payload.part.metadata.read_fields[]` 的字段名）。终态写 `<task_id>/mcp_field_summary.json` 独立 artifact，**不**直接改 SKILL manifest（由上游 meta-skill author 决定如何合并）。
+
+| `options` 字段 | 默认值 | 说明 |
+|---|---|---|
+| `mcp_name_pattern` | `"^([a-z][a-z0-9-]+)\\."` | 从 tool 名取 MCP 命名空间；第 1 个捕获组即 `mcp_name`，不匹配的 tool 被忽略 |
+| `read_fields_key` | `"read_fields"` | `raw_payload.part.metadata` 中 output fields 的 key |
+| `max_pending_calls` | `1024` | 同上 |
+
+### `hitl_policy.auto_approve` —— 自动审批模式
+
+`HitlPolicy.auto_approve` 是一组 `"<DecisionKind>:<context_key>"` 模式串；driver 在收到 `permission_request` 时若命中其一即自动 approve，无需人工。`<context_key>` 通常是工具名（例：`tool_permission:read_file`），支持 `fnmatch` 通配。例：
+
+```json
+"hitl_policy": {
+  "auto_approve": [
+    "tool_permission:read_file",
+    "tool_permission:list_directory",
+    "tool_permission:quant.*"
+  ]
+}
+```
+
+留空（默认）= 所有权限请求都走 HITL。
+
+### 完整示例：声明三个内置拦截器 + 自动审批读类工具
+
+```json
+{
+  "mode": "direct_execute",
+  "messages": [{"role": "user", "content": "跑一次 backtest"}],
+  "opencode_profile": {
+    "model": "dashscope/deepseek-v4-pro",
+    "interceptors": [
+      {"name": "conversations", "options": {"slug_prefix": "tianqi"}},
+      {"name": "backtest", "options": {"tool_pattern": "vibe-trading.backtest"}},
+      {"name": "mcp-fields", "options": {}}
+    ]
+  },
+  "hitl_policy": {
+    "auto_approve": ["tool_permission:read_file", "tool_permission:quant.*"]
+  }
+}
+```
+
+终态后产物落在：
+
+```
+<artifacts_dir>/<task_id>/
+├── conversations/<ISO8601>-tianqi-<6char>.jsonl
+├── backtests/
+│   ├── index.json
+│   └── <ISO8601>-iter-1/
+└── mcp_field_summary.json
+```
+
+每个文件同时通过标准 `insert_artifact` 路径登记到 DB，并触发一条 `artifact_ready` SSE 事件，可用 `GET /tasks/:id/artifacts/:artifact_id` 下载。
+
+---
+
 ## 关键实现说明
 
 ### opencode SSE 行为（当前实现按 1.14.30 实测处理）

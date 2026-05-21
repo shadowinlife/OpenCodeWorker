@@ -12,7 +12,7 @@
 > | Phase 3 | ✅ 已归档 | OpenCode HTTP Adapter + oh-my agent 路由 + HITL；E2E 跑通 |
 > | Phase 5 | ✅ 已归档 | HITL 闭环、超时事件、mode escalation、断线重连 |
 > | Phase 6 | 🟡 部分完成 | 可观测性 + 单测 197/197；P1-9~20 全部 closed；集成测试 + 安全回归脚本化仍 open（§9.B）|
-> | Phase X1（worker side）| 🟡 进行中 | W1（5 项前置）✅；W2-1 基类 ✅；W2-2 ConversationsWriter ✅；W2-3 BacktestInterceptor ✅；W2-4 McpFieldRecorder ✅；W-DoD 待启动（§9.A）|
+> | Phase X1（worker side）| 🟡 进行中 | W1（5 项前置）✅；W2-1 基类 ✅；W2-2 ConversationsWriter ✅；W2-3 BacktestInterceptor ✅；W2-4 McpFieldRecorder ✅；W-DoD smoke + usage-guide ✅（§9.A）；剩余依赖上游对接（U5 callback / X1 acceptance run）|
 > | Phase 7 | ⬜ 规划中 | 多租户 / 加密 / 跨节点 / broker 完整交付 |
 >
 > Sprint 0/1 P0/P1 闭环情况见 §8；W1 + W2-1/W2-2 闭环情况见
@@ -427,14 +427,15 @@ Phase 6 退出检查：
 > 本节是**唯一**列出"接下来做什么"的位置。已闭环工作不留 entry；详情参见 §8 / archive。
 > 排序按优先级（A > B > C > D）；同级内按依赖关系排。
 
-### 9.A — Phase X1 worker side：W2 SSE Hooks 已全部闭环 → W-DoD 待启动
+### 9.A — Phase X1 worker side：W2 SSE Hooks + W-DoD smoke 已全部闭环
 
 | 任务 | 描述 | 状态 |
 |---|---|---|
 | ~~**W2-3** BacktestInterceptor~~ | pattern 可配置（默认 `*.backtest`），`run_dir` 抽取 + 幂等复制，label 走 `iter-N` 自增 + `raw_payload.part.metadata.backtest_label` override。 | ✅ 2026-05-21：[backtest.py](../../src/worker/adapters/opencode/interceptors/backtest.py) + [test_interceptor_backtest.py](../../tests/unit/test_interceptor_backtest.py)（16 PASS）|
 | ~~**W2-4** McpFieldRecorder~~ | 监听所有 `tool_call_finished`，按 `(mcp_name, tool_name)` 聚合：`required_input_fields` 取 args top-level keys；`required_output_fields` 取 `raw_payload.part.metadata.read_fields[]`；终态写 `mcp_field_summary.json` 独立 artifact，**不**直接改 manifest.json。mcp_name 提取正则可配置（默认 `^([a-z][a-z0-9-]+)\.`）。 | ✅ 2026-05-21：[mcp_fields.py](../../src/worker/adapters/opencode/interceptors/mcp_fields.py) + [test_interceptor_mcp_fields.py](../../tests/unit/test_interceptor_mcp_fields.py)（16 PASS）|
+| ~~**W-DoD** smoke + usage-guide~~ | 端到端 smoke：声明 3 个内置工厂 → driver `_dispatch_to_interceptors` 喂合成 SSE → `_dispatch_terminal_and_flush` → 验三类 artifact 同时落盘 + DB 登记 + `artifact_ready` 事件。`docs/usage-guide.md` 新增 `opencode_profile.interceptors` / `hitl_policy.auto_approve` 完整字段表 + 示例。 | ✅ 2026-05-21：[test_w_dod_smoke.py](../../tests/integration/test_w_dod_smoke.py)（2 PASS，含 completed + aborted 终态路径）+ [usage-guide.md](../usage-guide.md) `opencode_profile` 章节 |
 
-**W2 退出门进度**：3/3 拦截器已实现 + 内置工厂注册 ✓；purity gate 持续 green ✓；端到端 smoke（W-DoD §3.3：feed 一个 fixture task 让三个拦截器同时落盘）+ usage-guide 文档化 `opencode_profile` 字段仍待补。
+**W2 退出门**：3/3 拦截器已实现 + 内置工厂注册 ✓；purity gate 持续 green ✓；端到端 smoke 关闭 ✓；usage-guide 文档化 ✓。剩余跨团队依赖：U5 `summarize_callback` provider（让 conversations slug 更可读）、X1 acceptance run（需上游 meta-skill 就绪），详见 §9.E。
 
 ### 9.B — Phase 6 测试缺口收尾（P1）
 
@@ -478,7 +479,7 @@ worker 完成 W2 后，端到端验证需要上游配合：
 ### 9.推荐执行顺序
 
 ```
-Week 1: W2-3 ✅ → W2-4 ✅ → W-DoD smoke + usage-guide → T1 + T2（测试缺口收尾，剩 ~3d）
+Week 1: W2-3 ✅ → W2-4 ✅ → W-DoD smoke + usage-guide ✅ → T1 + T2（测试缺口收尾，剩 ~2.5d）
 Week 2: Worker Client SDK 第一/二阶段（可与 W2 部分并行，~5.5d）
 Week 3: 上游 U5 callback 对接 + X1 acceptance run；Sprint 2 P2 穿插
 ```

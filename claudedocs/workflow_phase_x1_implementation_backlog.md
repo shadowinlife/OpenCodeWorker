@@ -251,11 +251,11 @@ These three hooks are the worker's **only** contribution to the strategy SKILL p
 
 Required for handoff to upstream:
 
-- [ ] All W1 + W2 tasks merged
-- [ ] `/sc:test` (or `pytest`) green; coverage on new interceptors ≥ 80%
-- [ ] Updated [docs/usage-guide.md](../docs/usage-guide.md) documents `opencode_profile` fields: `summarize_callback`, `backtest_tool_pattern`, `mcp_name_prefix_regex`, `auto_approve` patterns
-- [ ] One end-to-end smoke run: feed a fixture task with all three interceptors enabled, verify all expected output files materialize under `<task_id>/conversations/`, `<task_id>/backtests/`, `<task_id>/mcp_field_summary.json`
-- [ ] No new occurrences of forbidden strings (`vibe-trading|strategy|signal_engine|ma250`) in `src/worker/` (grep gate added to CI)
+- [x] All W1 + W2 tasks merged
+- [x] `/sc:test` (or `pytest`) green; coverage on new interceptors ≥ 80%
+- [x] Updated [docs/usage-guide.md](../docs/usage-guide.md) documents `opencode_profile` fields: `summarize_callback` (note: callable-only, requires upstream factory), `backtest_tool_pattern`, `mcp_name_prefix_regex`, `auto_approve` patterns — see "`opencode_profile` 配置" section
+- [x] One end-to-end smoke run: [tests/integration/test_w_dod_smoke.py](../tests/integration/test_w_dod_smoke.py) feeds a fixture task with all three interceptors enabled and verifies all expected output files materialize under `<task_id>/conversations/`, `<task_id>/backtests/`, `<task_id>/mcp_field_summary.json`; also verifies DB artifact rows + `artifact_ready` events (2 PASS, completed + aborted terminal paths)
+- [ ] No new occurrences of forbidden strings (`vibe-trading|strategy|signal_engine|ma250`) in `src/worker/` (grep gate added to CI) — *purity gate test still green; CI grep gate left as a separate ticket*
 
 ---
 
