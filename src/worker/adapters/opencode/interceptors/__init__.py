@@ -87,14 +87,30 @@ def build_interceptors_from_config(
 # 工厂期不接受 Python callable（只能从 JSON 配置走），如 summarize_callback
 # 这类需要 callable 的能力可由上游派生子类或在测试时直接 new ConversationsWriter。
 def _register_builtin_factories() -> None:
+    from worker.adapters.opencode.interceptors.backtest import (
+        BacktestInterceptor,
+    )
     from worker.adapters.opencode.interceptors.conversations import (
         ConversationsWriter,
+    )
+    from worker.adapters.opencode.interceptors.mcp_fields import (
+        McpFieldRecorder,
     )
 
     if "conversations" not in _FACTORIES:
         register_factory(
             "conversations",
             lambda **opts: ConversationsWriter(**opts),
+        )
+    if "backtest" not in _FACTORIES:
+        register_factory(
+            "backtest",
+            lambda **opts: BacktestInterceptor(**opts),
+        )
+    if "mcp-fields" not in _FACTORIES:
+        register_factory(
+            "mcp-fields",
+            lambda **opts: McpFieldRecorder(**opts),
         )
 
 

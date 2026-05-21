@@ -24,6 +24,7 @@ VibeTradingOpenCodeWorker 文档树指南。
 | 文档 | 用途 |
 |---|---|
 | [archive/code-review-2026-05-14.md](archive/code-review-2026-05-14.md) | 2026-05-14 全量 code review（8 P0 + 12 P1 + 8 P2）；含每项的修订/闭环证据 |
+| [archive/w1-w2-progress-2026-05-20.md](archive/w1-w2-progress-2026-05-20.md) | 2026-05-20 W1（X1 前置 5 项）+ W2-1（拦截器基类）+ W2-2（ConversationsWriter）闭环快照 |
 
 ## 维护约定
 

@@ -1017,14 +1017,16 @@ vibe-trading 已是回测能力主体：
 
 | 前置 | 归属 | 状态 |
 |---|---|---|
-| Worker P0-5（agent 名修回 Prometheus/Sisyphus） | 本仓库 | ⚠️ 待修 |
-| Worker P0-6（`task_timed_out` 事件类型） | 本仓库 | ⚠️ 待修 |
-| Worker P0-7（HITL abort 写正确终态） | 本仓库 | ⚠️ 待修 |
-| Worker P1-13（HITL on_timeout 全分支） | 本仓库 | ⚠️ 待修 |
-| Worker P1-14（HITL auto_approve 字段实装） | 本仓库 | ⚠️ 待修 |
+| Worker P0-5（agent 名修回 Prometheus/Sisyphus） | 本仓库 | ✅ 闭环（commit `e2e6716` + `e35d858`，2026-05-16）|
+| Worker P0-6（`task_timed_out` 事件类型） | 本仓库 | ✅ 闭环（commit `c2a74a7`，2026-05-18）|
+| Worker P0-7（HITL abort 写正确终态） | 本仓库 | ✅ 闭环（commit `c2a74a7`）|
+| Worker P1-13（HITL on_timeout 全分支） | 本仓库 | ✅ 闭环（commit `c3708a2`，2026-05-16）|
+| Worker P1-14（HITL auto_approve 字段实装） | 本仓库 | ✅ 闭环（commit `9fbb2bf`，2026-05-18）|
+| W2-1 EventInterceptor 基类 + W2-2 ConversationsWriter | 本仓库 | ✅ 闭环（commit `22334db` + `57745c5`，2026-05-20；详见 [archive/w1-w2-progress-2026-05-20.md](../archive/w1-w2-progress-2026-05-20.md)）|
+| W2-3 BacktestInterceptor + W2-4 McpFieldRecorder | 本仓库 | ✅ 闭环（2026-05-21；详见 [roadmap §9.A](../roadmap/opencode-worker.md)）|
 | 内部 vibe-trading fork repo 起骨架（含 GOVERNANCE.md） | 上游团队 | ⬜ 未启动 |
 | MCP 仓库骨架（`trading-data-cn` / `historical-news-cn`） | MCP 团队 | ⬜ 未启动 |
-| meta-skill `strategy-skill-author` v0 草稿 | 上游团队 | ⬜ 未启动 |
+| meta-skill `strategy-skill-author` v0 草稿 | 上游团队 | ⬜ 未启动（设计 v1 已就位见 [design/meta-skill-strategy-skill-author.md](./meta-skill-strategy-skill-author.md)）|
 
 ### 11.3 Architecture Invariants（实现期不能破）
 

@@ -24,19 +24,20 @@
 
 **P0/P1 backlog 进度**（来自 archive review）：
 
-- ✅ **已闭环**：P0-4 / P0-5 / P0-6 / P0-7 / P0-8 + P1-9 / P1-10 / P1-11 / P1-12 / P1-13 / P1-14 / P1-15 / P1-17 / P1-20。逐项证据见
+- ✅ **全部闭环**：P0-4 ~ P0-8 + P1-9 ~ P1-20（共 5 P0 + 12 P1）。逐项证据见
   [docs/archive/code-review-2026-05-14.md](../archive/code-review-2026-05-14.md) 各项的"修订"块。
 - ⏸ **推迟 Phase 7**：P0-1 / P0-2 / P0-3（broker 三件套）。
-- ❌ **仍 open**：P1-16（queue/orchestrator 状态双写）/ P1-18（git_subpath workspace 残留）/ P1-19（artifact GC 未实现）。详见 [roadmap §8](../roadmap/opencode-worker.md#8-sprint-backlog来源archivecode-review-2026-05-14md)。
 
-**优先级 P1：Phase 6 SSE Hooks（design §5.3）**
+**Phase 6 SSE Hooks 进度**（design §5.3 / [archive/w1-w2-progress-2026-05-20.md](../archive/w1-w2-progress-2026-05-20.md)）：
 
-| 任务 | 描述 | 工作量 |
-|---|---|---|
-| Conversations writer | 监听 SSE 组装 messages → JSONL，任务终态写入 `conversations/{slug}.jsonl` | 1 day |
-| Backtest interceptor | 拦截 `tool_call_finished` 识别 `vibe-trading.backtest`，复制 vibe-trading runs/ 到 SKILL `backtests/` | 1 day |
-| MCP field auto-recorder | 监听所有 `tool_call_finished`，按 (mcp, tool) 聚合实际 input/output 字段 → 回填 manifest | 2 days |
-| 三 hooks 共享 SSE 拦截器抽象 | 重构出 `EventInterceptor` 基类 + 三个具体实现 | 1 day |
+| 任务 | 状态 | Commit | 说明 |
+|---|---|---|---|
+| 共享 `EventInterceptor` 基类（W2-1）| ✅ | `22334db` | 三 hooks 共享 SSE 拦截基础设施 + Runner + 注册中心 |
+| ConversationsWriter（W2-2）| ✅ | `57745c5` | SSE → JSONL 对话证据 + slug callback + 敏感信息脱敏 |
+| BacktestInterceptor（W2-3）| ✅ | 2026-05-21 | pattern 注入式（不硬编码 vibe-trading），16 用例 PASS |
+| McpFieldRecorder（W2-4）| ✅ | 2026-05-21 | 双保险（worker 实测 + 上游 read_fields 提示），16 用例 PASS |
+
+详细 next-steps 见 [roadmap §9](../roadmap/opencode-worker.md)。
 
 ---
 
@@ -196,19 +197,22 @@ mcps-{name}/
 ### Phase X1：MVP 闭环（建议 2~3 周）
 
 **Worker side**
-- ✅ 完成所有 P0 修复（§1.1 P0 list）
-- ✅ 完成 Phase 6 三个 SSE hooks
+- ✅ 完成所有 P0 修复（§1.1）
+- ✅ W2-1 EventInterceptor 基类（commit `22334db`）
+- ✅ W2-2 ConversationsWriter（commit `57745c5`）
+- ✅ W2-3 BacktestInterceptor（2026-05-21；详见 [roadmap §9.A](../roadmap/opencode-worker.md)）
+- ✅ W2-4 McpFieldRecorder（2026-05-21；同上）
 
 **上游 side**
-- ✅ meta-skill v0.1 上线
-- ✅ Strategy Registry 骨架
-- ✅ Agent Loader 校验器（含 D17 完整校验流程）
-- ✅ 最简 cron + 推送脚本
+- ⬜ meta-skill v0.1 上线
+- ⬜ Strategy Registry 骨架
+- ⬜ Agent Loader 校验器（含 D17 完整校验流程）
+- ⬜ 最简 cron + 推送脚本
 
 **MCP side**
-- ✅ `trading-data-cn` v1.0（含 `get_security_meta` / `get_universe`）
-- ✅ `historical-news-cn` v1.0（含 `query_news`）
-- ✅ 内部 vibe-trading fork 起骨架（暂不删 community 能力）
+- ⬜ `trading-data-cn` v1.0（含 `get_security_meta` / `get_universe`）
+- ⬜ `historical-news-cn` v1.0（含 `query_news`）
+- ⬜ 内部 vibe-trading fork 起骨架（暂不删 community 能力）
 
 **验证 DoD**
 - 用户和 Prometheus 对话 30 分钟，产出一份 `ma250-pullback@0.0.1` SKILL

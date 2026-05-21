@@ -2,7 +2,7 @@
 
 > 本文档是 `VibeTradingOpenCodeWorker` 仓库的实施路线图。
 >
-> **当前阶段（2026-05-18 更新）**：
+> **当前阶段（2026-05-20 更新）**：
 >
 > | Phase | 状态 | 摘要 |
 > |---|---|---|
@@ -11,11 +11,13 @@
 > | Phase 2 | ✅ 已归档 | Docker Sandbox + Workspace；镜像 + 安全回归 7/7 PASS。Broker 三件套（P0-1/2/3）⏸ 推迟 Phase 7（详见 §H1b 与 [ADR-004](../adr/ADR-004-broker-boundary.md)） |
 > | Phase 3 | ✅ 已归档 | OpenCode HTTP Adapter + oh-my agent 路由 + HITL；E2E 跑通 |
 > | Phase 5 | ✅ 已归档 | HITL 闭环、超时事件、mode escalation、断线重连 |
-> | Phase 6 | 🟡 部分完成 | 可观测性 + 单测齐备（118/118 pass）；P1-9/11/12 等 8 项 closed；集成测试 + 安全回归脚本化待补 |
+> | Phase 6 | 🟡 部分完成 | 可观测性 + 单测 197/197；P1-9~20 全部 closed；集成测试 + 安全回归脚本化仍 open（§9.B）|
+> | Phase X1（worker side）| 🟡 进行中 | W1（5 项前置）✅；W2-1 基类 ✅；W2-2 ConversationsWriter ✅；W2-3 BacktestInterceptor ✅；W2-4 McpFieldRecorder ✅；W-DoD 待启动（§9.A）|
 > | Phase 7 | ⬜ 规划中 | 多租户 / 加密 / 跨节点 / broker 完整交付 |
 >
-> Sprint 0/1 P0/P1 详细闭环情况见 §8；逐项证据见
-> [archive/code-review-2026-05-14.md](../archive/code-review-2026-05-14.md)
+> Sprint 0/1 P0/P1 闭环情况见 §8；W1 + W2-1/W2-2 闭环情况见
+> [archive/w1-w2-progress-2026-05-20.md](../archive/w1-w2-progress-2026-05-20.md)。
+> 逐项证据见 [archive/code-review-2026-05-14.md](../archive/code-review-2026-05-14.md)
 > （2026-05-14 全量 review，已归档；含 8 P0 + 12 P1 + 8 P2 + 测试缺口）。
 >
 > §1.3 / §1.4 保留 2026-05-13 的本机自检与骨架验证记录。
@@ -417,3 +419,66 @@ Phase 6 退出检查：
 | 安全回归脚本化 | 手工 | pytest + Docker fixture 自动运行 |
 | Contract JSON Schema 校验 | 无 | 上游 TaskRequest/Event 通过 JSON Schema 严格校验 |
 | abort/timeout 终态事件 | 已有单元测试覆盖（`tests/unit/test_terminal_exceptions.py`） | 补充 driver/queue 级端到端用例，覆盖真实终态落库与 SSE 输出 |
+
+---
+
+## 9. 当前 Open 工作项（2026-05-20）
+
+> 本节是**唯一**列出"接下来做什么"的位置。已闭环工作不留 entry；详情参见 §8 / archive。
+> 排序按优先级（A > B > C > D）；同级内按依赖关系排。
+
+### 9.A — Phase X1 worker side：W2 SSE Hooks 已全部闭环 → W-DoD 待启动
+
+| 任务 | 描述 | 状态 |
+|---|---|---|
+| ~~**W2-3** BacktestInterceptor~~ | pattern 可配置（默认 `*.backtest`），`run_dir` 抽取 + 幂等复制，label 走 `iter-N` 自增 + `raw_payload.part.metadata.backtest_label` override。 | ✅ 2026-05-21：[backtest.py](../../src/worker/adapters/opencode/interceptors/backtest.py) + [test_interceptor_backtest.py](../../tests/unit/test_interceptor_backtest.py)（16 PASS）|
+| ~~**W2-4** McpFieldRecorder~~ | 监听所有 `tool_call_finished`，按 `(mcp_name, tool_name)` 聚合：`required_input_fields` 取 args top-level keys；`required_output_fields` 取 `raw_payload.part.metadata.read_fields[]`；终态写 `mcp_field_summary.json` 独立 artifact，**不**直接改 manifest.json。mcp_name 提取正则可配置（默认 `^([a-z][a-z0-9-]+)\.`）。 | ✅ 2026-05-21：[mcp_fields.py](../../src/worker/adapters/opencode/interceptors/mcp_fields.py) + [test_interceptor_mcp_fields.py](../../tests/unit/test_interceptor_mcp_fields.py)（16 PASS）|
+
+**W2 退出门进度**：3/3 拦截器已实现 + 内置工厂注册 ✓；purity gate 持续 green ✓；端到端 smoke（W-DoD §3.3：feed 一个 fixture task 让三个拦截器同时落盘）+ usage-guide 文档化 `opencode_profile` 字段仍待补。
+
+### 9.B — Phase 6 测试缺口收尾（P1）
+
+| 任务 | 描述 | 估时 | 备注 |
+|---|---|---|---|
+| **T1** HITL 时序集成测试 | 复用现有 [tests/fixtures/stub_opencode_server.py](../../tests/fixtures/stub_opencode_server.py)，覆盖决策早到 / 晚到 / 重复 / 超时边界四类场景 | 1.5d | 不依赖真实 Docker |
+| **T2** abort/timeout 终态事件 driver/queue E2E | 已有单元覆盖（`test_terminal_exceptions.py`）；补 driver→queue→DB→SSE 全链路 | 1d | 与 T1 共享 fixture |
+| **T3** 安全回归脚本化 | Phase 2 手测 7 项沉淀为 pytest + Docker fixture（CI 可选执行）| 2d | 需真实 Docker；CI 上可标 optional |
+| **T4** Contract JSON Schema 校验 | 上游 TaskRequest/Event 通过 JSON Schema 严格校验 | 0.5d | 上游契约层 |
+
+**先做 T1 + T2**（共 2.5d）能补齐 Phase 6 退出门 80%。T3 / T4 可与 X2 一起规划。
+
+### 9.C — Worker Client SDK（P1，独立 lane）
+
+设计文档 [design/worker-client-sdk-interface-design.md](../design/worker-client-sdk-interface-design.md) v1 已完成，0 行实现。与 W2 / Phase 6 测试**完全独立**，可并行启动。
+
+| 任务 | 描述 | 估时 |
+|---|---|---|
+| SDK 第一阶段 | §13.1 步骤 1-3：`AsyncWorkerClient.__init__` + 认证 / `get_health()` / `assert_compatible()` / `create_task()` / `get_task()` / `abort_task()` | 1.5d |
+| SDK 第二阶段 | §13.1 步骤 4-8：`stream_events()` + 自动重连 / `wait_until_terminal()` / `submit_decision()` / artifact 下载 / `create_and_wait()` | 3d |
+| SDK 测试矩阵 | L1 单测（错误映射、SSE parser、重连）+ L2 stub server 协议测试 | 1d |
+
+### 9.D — Sprint 2 P2 代码质量（P2，机会战术）
+
+[§8 Sprint 2](#sprint-2--代码质量) 8 项 P2 仍未启动。非阻塞，建议 W2 + Phase 6 测试缺口收尾后穿插完成。
+
+### 9.E — 上游 / MCP 团队（不在本仓推进，仅记录依赖）
+
+worker 完成 W2 后，端到端验证需要上游配合：
+
+| 跨团队 | 任务 | 阻塞本仓什么 |
+|---|---|---|
+| 上游 runtime | U5 `summarize_callback` provider | W2-2 当前用 fallback slug；接通 callback 后 conversations 命名更可读 |
+| 上游 runtime | U1 meta-skill `strategy-skill-author` v0.1 | 端到端验证（X1 DoD §6）需要 meta-skill 让 Prometheus 写出合格 SKILL |
+| MCP 团队 | M1 / M2 / M4 MCP 自描述协议 + 仓库骨架 | W2-4 输出的 `mcp_field_summary.json` 需要 MCP `describe_tool()` 配对才能闭环字段校验 |
+
+详细依赖关系见 [claudedocs/workflow_phase_x1_implementation_backlog.md §6](../../claudedocs/workflow_phase_x1_implementation_backlog.md)。
+
+---
+
+### 9.推荐执行顺序
+
+```
+Week 1: W2-3 ✅ → W2-4 ✅ → W-DoD smoke + usage-guide → T1 + T2（测试缺口收尾，剩 ~3d）
+Week 2: Worker Client SDK 第一/二阶段（可与 W2 部分并行，~5.5d）
+Week 3: 上游 U5 callback 对接 + X1 acceptance run；Sprint 2 P2 穿插
+```
