@@ -305,7 +305,7 @@ pending
   - [x] 集成 fixture：stub opencode HTTP server（tests/fixtures/stub_opencode_server.py，FastAPI+uvicorn，可脚本驱动 SSE 事件）。
   - [ ] 契约：JSON Schema 校验上游 contract（Phase 7 补充）。
   - [ ] 安全回归：Phase 2 列表 + secret 泄漏扫描 + 容器 escape 尝试（需真实 Docker 环境）。
-  - [ ] HITL 时序：决策早到 / 晚到 / 重复 / 超时边界集成测试（pending）。
+  - [x] HITL 时序：决策早到 / 晚到 / 重复 / 超时边界集成测试 — 2026-05-21 闭环：[tests/integration/test_hitl_timing_e2e.py](../../tests/integration/test_hitl_timing_e2e.py)（4 PASS）。
 - [x] 可观测性：
   - [x] 结构化日志（CorrelationFilter 注入 task_id / session_id / decision_id，observability/logging.py）。
   - [x] Metrics（Prometheus text format GET /metrics endpoint）：task_count、task_duration、hitl_wait_seconds、container_start_ms、abort_rate、token_usage（observability/metrics.py）。
@@ -323,7 +323,7 @@ Phase 6 退出检查：
 - [x] Prometheus /metrics 端点**格式**以 text/plain; version=0.0.4 响应。
 - [x] **Metrics counter 接入** — `[REVIEW: P1-11]` 已于 2026-05-18 修复：queue / sandbox / driver 关键路径全部接入 counter / summary。
 - [x] 结构化日志 correlation filter 通过语法检查 + 模块导入验证。
-- [ ] 集成测试（HITL 时序、安全回归脚本化）需真实 Docker 环境，标记为 pending。
+- [x] 集成测试（HITL 时序、abort/timeout 终态 E2E）— 2026-05-21 闭环：[test_hitl_timing_e2e.py](../../tests/integration/test_hitl_timing_e2e.py) + [test_terminal_e2e.py](../../tests/integration/test_terminal_e2e.py)（共 7 PASS，<6s wall-clock）。安全回归脚本化（T3）仍需真实 Docker 环境，标记为 pending。
 - [x] WAL 模式启用 — `[REVIEW: P1-9]` 已于 2026-05-18 修复，`init_db` 启用 WAL + synchronous=NORMAL + busy_timeout=5000。
 
 ---
@@ -415,10 +415,10 @@ Phase 6 退出检查：
 
 | 范围 | 现状 | 目标 |
 |---|---|---|
-| Orchestrator 集成（HITL 时序） | 无 | stub server 驱动的决策早到/晚到/超时场景 |
+| Orchestrator 集成（HITL 时序） | ✅ 已覆盖 — [test_hitl_timing_e2e.py](../../tests/integration/test_hitl_timing_e2e.py)（4 PASS：早到 / 晚到 / 重复幂等 / 超时 abort，2026-05-21 闭环） | — |
 | 安全回归脚本化 | 手工 | pytest + Docker fixture 自动运行 |
 | Contract JSON Schema 校验 | 无 | 上游 TaskRequest/Event 通过 JSON Schema 严格校验 |
-| abort/timeout 终态事件 | 已有单元测试覆盖（`tests/unit/test_terminal_exceptions.py`） | 补充 driver/queue 级端到端用例，覆盖真实终态落库与 SSE 输出 |
+| abort/timeout 终态事件 | ✅ 已覆盖 — 单元 [test_terminal_exceptions.py](../../tests/unit/test_terminal_exceptions.py) + 集成 [test_terminal_e2e.py](../../tests/integration/test_terminal_e2e.py)（3 PASS：HITL→abort 全链路 / ResourceLimits→timed_out / SSE 订阅者唤醒，2026-05-21 闭环） | — |
 
 ---
 
@@ -441,12 +441,12 @@ Phase 6 退出检查：
 
 | 任务 | 描述 | 估时 | 备注 |
 |---|---|---|---|
-| **T1** HITL 时序集成测试 | 复用现有 [tests/fixtures/stub_opencode_server.py](../../tests/fixtures/stub_opencode_server.py)，覆盖决策早到 / 晚到 / 重复 / 超时边界四类场景 | 1.5d | 不依赖真实 Docker |
-| **T2** abort/timeout 终态事件 driver/queue E2E | 已有单元覆盖（`test_terminal_exceptions.py`）；补 driver→queue→DB→SSE 全链路 | 1d | 与 T1 共享 fixture |
+| ~~**T1** HITL 时序集成测试~~ | 复用 [tests/fixtures/stub_opencode_server.py](../../tests/fixtures/stub_opencode_server.py) 覆盖决策早到 / 晚到 / 重复幂等 / 超时 abort 四类时序边界。 | — | ✅ 2026-05-21：[test_hitl_timing_e2e.py](../../tests/integration/test_hitl_timing_e2e.py)（4 PASS）+ 共享 [tests/integration/conftest.py](../../tests/integration/conftest.py) fixture |
+| ~~**T2** abort/timeout 终态事件 driver/queue E2E~~ | driver→queue→DB→event_bus 全链路：HITL 超时 abort 透传 reason/decision_id；ResourceLimits.timeout_sec→TaskTimedOutError 透传 timeout_sec；事先订阅的 event_bus.Event 在终态写入后立即唤醒。 | — | ✅ 2026-05-21：[test_terminal_e2e.py](../../tests/integration/test_terminal_e2e.py)（3 PASS，含 metrics counter 增量断言）|
 | **T3** 安全回归脚本化 | Phase 2 手测 7 项沉淀为 pytest + Docker fixture（CI 可选执行）| 2d | 需真实 Docker；CI 上可标 optional |
 | **T4** Contract JSON Schema 校验 | 上游 TaskRequest/Event 通过 JSON Schema 严格校验 | 0.5d | 上游契约层 |
 
-**先做 T1 + T2**（共 2.5d）能补齐 Phase 6 退出门 80%。T3 / T4 可与 X2 一起规划。
+**T1 + T2 已闭环**（2026-05-21，共 9 新增集成用例 in tests/integration/，全套 238/238 PASS，<6s wall-clock）——Phase 6 退出门 80% 测试缺口已补齐。剩余 T3 / T4 可与 X2 一起规划。
 
 ### 9.C — Worker Client SDK（P1，独立 lane）
 
@@ -479,7 +479,7 @@ worker 完成 W2 后，端到端验证需要上游配合：
 ### 9.推荐执行顺序
 
 ```
-Week 1: W2-3 ✅ → W2-4 ✅ → W-DoD smoke + usage-guide ✅ → T1 + T2（测试缺口收尾，剩 ~2.5d）
+Week 1: W2-3 ✅ → W2-4 ✅ → W-DoD smoke + usage-guide ✅ → T1 + T2 ✅（Phase 6 测试缺口 80% 闭环，2026-05-21）
 Week 2: Worker Client SDK 第一/二阶段（可与 W2 部分并行，~5.5d）
 Week 3: 上游 U5 callback 对接 + X1 acceptance run；Sprint 2 P2 穿插
 ```
