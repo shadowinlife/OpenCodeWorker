@@ -8,6 +8,8 @@ VibeTradingOpenCodeWorker 文档树指南。
 |---|---|
 | [roadmap/opencode-worker.md](roadmap/opencode-worker.md) | 实施路线图 + Sprint backlog（**主入口**） |
 | [usage-guide.md](usage-guide.md) | 部署 / 调试 / 端到端使用手册 |
+| [worker-sdk-usage.md](worker-sdk-usage.md) | Worker Client SDK 0.1.x 使用文档（上游 runtime 接入手册） |
+| [worker-sdk-examples.md](worker-sdk-examples.md) | Worker Client SDK 端到端可运行示例 |
 | [adr/](adr/) | 已 Accepted 的架构决策记录（ADR-001~006） |
 
 ## 设计文档（design，X1 期间活跃）
@@ -25,6 +27,7 @@ VibeTradingOpenCodeWorker 文档树指南。
 |---|---|
 | [archive/code-review-2026-05-14.md](archive/code-review-2026-05-14.md) | 2026-05-14 全量 code review（8 P0 + 12 P1 + 8 P2）；含每项的修订/闭环证据 |
 | [archive/w1-w2-progress-2026-05-20.md](archive/w1-w2-progress-2026-05-20.md) | 2026-05-20 W1（X1 前置 5 项）+ W2-1（拦截器基类）+ W2-2（ConversationsWriter）闭环快照 |
+| [archive/w2-phase6-sdk-progress-2026-05-22.md](archive/w2-phase6-sdk-progress-2026-05-22.md) | 2026-05-22 W2-3/W2-4/W-DoD + Phase 6 T1/T2 集成测试 + Worker Client SDK 0.1.0 全量交付闭环快照 |
 
 ## 维护约定
 

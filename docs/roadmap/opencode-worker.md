@@ -2,7 +2,7 @@
 
 > 本文档是 `VibeTradingOpenCodeWorker` 仓库的实施路线图。
 >
-> **当前阶段（2026-05-20 更新）**：
+> **当前阶段（2026-05-22 更新）**：
 >
 > | Phase | 状态 | 摘要 |
 > |---|---|---|
@@ -11,12 +11,14 @@
 > | Phase 2 | ✅ 已归档 | Docker Sandbox + Workspace；镜像 + 安全回归 7/7 PASS。Broker 三件套（P0-1/2/3）⏸ 推迟 Phase 7（详见 §H1b 与 [ADR-004](../adr/ADR-004-broker-boundary.md)） |
 > | Phase 3 | ✅ 已归档 | OpenCode HTTP Adapter + oh-my agent 路由 + HITL；E2E 跑通 |
 > | Phase 5 | ✅ 已归档 | HITL 闭环、超时事件、mode escalation、断线重连 |
-> | Phase 6 | 🟡 部分完成 | 可观测性 + 单测 197/197；P1-9~20 全部 closed；集成测试 + 安全回归脚本化仍 open（§9.B）|
-> | Phase X1（worker side）| 🟡 进行中 | W1（5 项前置）✅；W2-1 基类 ✅；W2-2 ConversationsWriter ✅；W2-3 BacktestInterceptor ✅；W2-4 McpFieldRecorder ✅；W-DoD smoke + usage-guide ✅（§9.A）；剩余依赖上游对接（U5 callback / X1 acceptance run）|
+> | Phase 6 | 🟡 收尾中 | 可观测性 + 单测 245+；T1（HITL 时序 E2E）+ T2（终态 E2E）✅ 闭环（§9.B）；剩 T3 安全回归脚本化 + T4 Contract JSON Schema |
+> | Phase X1（worker side）| ✅ 本仓闭环 | W1（5 项前置）✅；W2-1 基类 ✅；W2-2/3/4 三个拦截器 ✅；W-DoD smoke + usage-guide ✅（§9.A）；本仓退出门 100%，剩余跨团队依赖（U5 callback / X1 acceptance run）见 §9.E |
+> | Worker Client SDK | ✅ 0.1.0 落地 | `src/worker_sdk/` 全量公开接口实装（HTTP + SSE + 自动重连 + HITL + artifact 下载 + 兼容性矩阵）；48 单测 / 93% coverage（§9.C）|
 > | Phase 7 | ⬜ 规划中 | 多租户 / 加密 / 跨节点 / broker 完整交付 |
 >
-> Sprint 0/1 P0/P1 闭环情况见 §8；W1 + W2-1/W2-2 闭环情况见
-> [archive/w1-w2-progress-2026-05-20.md](../archive/w1-w2-progress-2026-05-20.md)。
+> Sprint 0/1 P0/P1 闭环情况见 §8；
+> W1 + W2-1/W2-2 闭环情况见 [archive/w1-w2-progress-2026-05-20.md](../archive/w1-w2-progress-2026-05-20.md)；
+> W2-3/4 + W-DoD + Phase 6 T1/T2 + SDK 0.1.0 闭环情况见 [archive/w2-phase6-sdk-progress-2026-05-22.md](../archive/w2-phase6-sdk-progress-2026-05-22.md)。
 > 逐项证据见 [archive/code-review-2026-05-14.md](../archive/code-review-2026-05-14.md)
 > （2026-05-14 全量 review，已归档；含 8 P0 + 12 P1 + 8 P2 + 测试缺口）。
 >
@@ -422,54 +424,61 @@ Phase 6 退出检查：
 
 ---
 
-## 9. 当前 Open 工作项（2026-05-20）
+## 9. 当前 Open 工作项（2026-05-22）
 
 > 本节是**唯一**列出"接下来做什么"的位置。已闭环工作不留 entry；详情参见 §8 / archive。
 > 排序按优先级（A > B > C > D）；同级内按依赖关系排。
+>
+> **2026-05-21 ~ 2026-05-22 闭环范围**（已迁出本节，详见 [archive/w2-phase6-sdk-progress-2026-05-22.md](../archive/w2-phase6-sdk-progress-2026-05-22.md)）：
+> - Phase X1 worker side：W2-3 BacktestInterceptor / W2-4 McpFieldRecorder / W-DoD smoke + usage-guide ✅
+> - Phase 6 测试缺口：T1 HITL 时序 E2E（4 PASS）/ T2 终态 driver-queue E2E（3 PASS）✅
+> - Worker Client SDK：Draft v1 设计稿 → 0.1.0 全量公开接口实装（设计稿 §13.1 步骤 1-8 一次到位，含 SSE 自动重连 / `Retry-After` / 兼容性矩阵 / 48 单测 93% coverage）✅
 
-### 9.A — Phase X1 worker side：W2 SSE Hooks + W-DoD smoke 已全部闭环
+### 9.A — Phase 6 收尾（P1）
 
-| 任务 | 描述 | 状态 |
-|---|---|---|
-| ~~**W2-3** BacktestInterceptor~~ | pattern 可配置（默认 `*.backtest`），`run_dir` 抽取 + 幂等复制，label 走 `iter-N` 自增 + `raw_payload.part.metadata.backtest_label` override。 | ✅ 2026-05-21：[backtest.py](../../src/worker/adapters/opencode/interceptors/backtest.py) + [test_interceptor_backtest.py](../../tests/unit/test_interceptor_backtest.py)（16 PASS）|
-| ~~**W2-4** McpFieldRecorder~~ | 监听所有 `tool_call_finished`，按 `(mcp_name, tool_name)` 聚合：`required_input_fields` 取 args top-level keys；`required_output_fields` 取 `raw_payload.part.metadata.read_fields[]`；终态写 `mcp_field_summary.json` 独立 artifact，**不**直接改 manifest.json。mcp_name 提取正则可配置（默认 `^([a-z][a-z0-9-]+)\.`）。 | ✅ 2026-05-21：[mcp_fields.py](../../src/worker/adapters/opencode/interceptors/mcp_fields.py) + [test_interceptor_mcp_fields.py](../../tests/unit/test_interceptor_mcp_fields.py)（16 PASS）|
-| ~~**W-DoD** smoke + usage-guide~~ | 端到端 smoke：声明 3 个内置工厂 → driver `_dispatch_to_interceptors` 喂合成 SSE → `_dispatch_terminal_and_flush` → 验三类 artifact 同时落盘 + DB 登记 + `artifact_ready` 事件。`docs/usage-guide.md` 新增 `opencode_profile.interceptors` / `hitl_policy.auto_approve` 完整字段表 + 示例。 | ✅ 2026-05-21：[test_w_dod_smoke.py](../../tests/integration/test_w_dod_smoke.py)（2 PASS，含 completed + aborted 终态路径）+ [usage-guide.md](../usage-guide.md) `opencode_profile` 章节 |
-
-**W2 退出门**：3/3 拦截器已实现 + 内置工厂注册 ✓；purity gate 持续 green ✓；端到端 smoke 关闭 ✓；usage-guide 文档化 ✓。剩余跨团队依赖：U5 `summarize_callback` provider（让 conversations slug 更可读）、X1 acceptance run（需上游 meta-skill 就绪），详见 §9.E。
-
-### 9.B — Phase 6 测试缺口收尾（P1）
+剩余 2 项测试缺口；与 X2 / Phase 7 一起规划，不阻塞当前 release：
 
 | 任务 | 描述 | 估时 | 备注 |
 |---|---|---|---|
-| ~~**T1** HITL 时序集成测试~~ | 复用 [tests/fixtures/stub_opencode_server.py](../../tests/fixtures/stub_opencode_server.py) 覆盖决策早到 / 晚到 / 重复幂等 / 超时 abort 四类时序边界。 | — | ✅ 2026-05-21：[test_hitl_timing_e2e.py](../../tests/integration/test_hitl_timing_e2e.py)（4 PASS）+ 共享 [tests/integration/conftest.py](../../tests/integration/conftest.py) fixture |
-| ~~**T2** abort/timeout 终态事件 driver/queue E2E~~ | driver→queue→DB→event_bus 全链路：HITL 超时 abort 透传 reason/decision_id；ResourceLimits.timeout_sec→TaskTimedOutError 透传 timeout_sec；事先订阅的 event_bus.Event 在终态写入后立即唤醒。 | — | ✅ 2026-05-21：[test_terminal_e2e.py](../../tests/integration/test_terminal_e2e.py)（3 PASS，含 metrics counter 增量断言）|
-| **T3** 安全回归脚本化 | Phase 2 手测 7 项沉淀为 pytest + Docker fixture（CI 可选执行）| 2d | 需真实 Docker；CI 上可标 optional |
-| **T4** Contract JSON Schema 校验 | 上游 TaskRequest/Event 通过 JSON Schema 严格校验 | 0.5d | 上游契约层 |
+| **T3** 安全回归脚本化 | Phase 2 手测 7 项沉淀为 pytest + Docker fixture（CI 可选执行）| 2d | 需真实 Docker；CI 上可标 optional。**与 Phase 7 broker 一起做**性价比更高（broker 上线后会引入新一批 egress / CONNECT 隧道安全用例，避免重复搭脚手架）|
+| **T4** Contract JSON Schema 校验 | 上游 TaskRequest/Event 通过 JSON Schema 严格校验 | 0.5d | 上游契约层；可顺势配合 SDK [models.py](../../src/worker_sdk/models.py) frozen dataclass 一起做静态对齐 |
 
-**T1 + T2 已闭环**（2026-05-21，共 9 新增集成用例 in tests/integration/，全套 238/238 PASS，<6s wall-clock）——Phase 6 退出门 80% 测试缺口已补齐。剩余 T3 / T4 可与 X2 一起规划。
+### 9.B — Worker Client SDK 后续（P2）
 
-### 9.C — Worker Client SDK（P1，独立 lane）
+SDK 0.1.0 已是设计稿 Draft v1 的全量交付（[archive snapshot](../archive/w2-phase6-sdk-progress-2026-05-22.md#5-worker-client-sdk--phase-1--2-一次到位)）。后续以**用得起来**为唯一标准，不再追加抽象层：
 
-设计文档 [design/worker-client-sdk-interface-design.md](../design/worker-client-sdk-interface-design.md) v1 已完成，0 行实现。与 W2 / Phase 6 测试**完全独立**，可并行启动。
+| 任务 | 描述 | 估时 | 备注 |
+|---|---|---|---|
+| **SDK-D1** 上游 runtime 接入演练 | 上游 agent runtime 用 `worker_sdk` 替换裸 httpx 调用，跑通至少一条 plan_first 全链路 | 1d | 验证 SDK 公开面足够，反向收集接口缺口 |
+| **SDK-D2** 兼容性矩阵自动化 | `assert_compatible()` 在 worker `/health` 协议格式微改时仍能 graceful fail | 0.5d | 当前为静态字符串前缀比对，可补 worker side `/health.api_version` 字段 |
+| **SDK-D3** L2 stub server 协议测试 | 在 [tests/fixtures/stub_opencode_server.py](../../tests/fixtures/stub_opencode_server.py) 之外，针对 SDK 起 stub Worker server 跑跨进程协议测试 | 1d | 当前 L1 已用 `httpx.ASGITransport` 直挂 FastAPI app；L2 价值在跨进程 / SSE keep-alive / 真实 socket 行为 |
+| **SDK-D4** 0.2.x 版本通道规划 | 当 worker contract 出现破坏性变更时的 SDK 双轨发布策略 | 0.5d | 仅在出现实际破坏性变更前置规划；当前**不**启动 |
 
-| 任务 | 描述 | 估时 |
-|---|---|---|
-| SDK 第一阶段 | §13.1 步骤 1-3：`AsyncWorkerClient.__init__` + 认证 / `get_health()` / `assert_compatible()` / `create_task()` / `get_task()` / `abort_task()` | 1.5d |
-| SDK 第二阶段 | §13.1 步骤 4-8：`stream_events()` + 自动重连 / `wait_until_terminal()` / `submit_decision()` / artifact 下载 / `create_and_wait()` | 3d |
-| SDK 测试矩阵 | L1 单测（错误映射、SSE parser、重连）+ L2 stub server 协议测试 | 1d |
+### 9.C — Sprint 2 P2 代码质量（P2，机会战术）
 
-### 9.D — Sprint 2 P2 代码质量（P2，机会战术）
+[§8 Sprint 2](#sprint-2--代码质量) 8 项 P2 仍未启动。非阻塞，建议在 SDK 接入演练（9.B SDK-D1）穿插期完成；优先级 P2-22（`asyncio.get_event_loop()` 替换）/ P2-23（吞异常补 `raise` + log）/ P2-25（import 副作用收口），其余按 grep 结果机会处理。
 
-[§8 Sprint 2](#sprint-2--代码质量) 8 项 P2 仍未启动。非阻塞，建议 W2 + Phase 6 测试缺口收尾后穿插完成。
+### 9.D — Phase 7 启动评估（决策点）
+
+W2 + Phase 6 测试缺口 80% + SDK 0.1.0 已构成 MVP-like 闭环。**是否进入 Phase 7** 是下一个 HITL 决策点；建议在做出选择前先收集：
+
+| 决策输入 | 状态 |
+|---|---|
+| 上游 runtime 真实接入数据（SDK-D1 反馈） | ⬜ 待 9.B SDK-D1 完成 |
+| MCP 团队 M1/M2/M4 自描述协议草案 | ⬜ 跨团队（§9.E）|
+| Broker 完整交付（P0-1/2/3）的实际触发点 | ⬜ 由真实 egress 需求触发；MVP 默认仍 `WORKER_BROKER_ENABLED=false` |
+
+> 不建议**预先**启动 Phase 7 多租户 / 加密 / 跨节点 — 这些项在没有真实流量诉求时会沉淀大量未验证抽象。
 
 ### 9.E — 上游 / MCP 团队（不在本仓推进，仅记录依赖）
 
-worker 完成 W2 后，端到端验证需要上游配合：
+worker 完成 W2 + SDK 0.1.0 后，端到端验证需要上游配合：
 
 | 跨团队 | 任务 | 阻塞本仓什么 |
 |---|---|---|
 | 上游 runtime | U5 `summarize_callback` provider | W2-2 当前用 fallback slug；接通 callback 后 conversations 命名更可读 |
 | 上游 runtime | U1 meta-skill `strategy-skill-author` v0.1 | 端到端验证（X1 DoD §6）需要 meta-skill 让 Prometheus 写出合格 SKILL |
+| 上游 runtime | SDK-D1 接入演练 | 反向校验 [worker-client-sdk-interface-design.md](../design/worker-client-sdk-interface-design.md) §7 公开面是否齐全 |
 | MCP 团队 | M1 / M2 / M4 MCP 自描述协议 + 仓库骨架 | W2-4 输出的 `mcp_field_summary.json` 需要 MCP `describe_tool()` 配对才能闭环字段校验 |
 
 详细依赖关系见 [claudedocs/workflow_phase_x1_implementation_backlog.md §6](../../claudedocs/workflow_phase_x1_implementation_backlog.md)。
@@ -479,7 +488,19 @@ worker 完成 W2 后，端到端验证需要上游配合：
 ### 9.推荐执行顺序
 
 ```
-Week 1: W2-3 ✅ → W2-4 ✅ → W-DoD smoke + usage-guide ✅ → T1 + T2 ✅（Phase 6 测试缺口 80% 闭环，2026-05-21）
-Week 2: Worker Client SDK 第一/二阶段（可与 W2 部分并行，~5.5d）
-Week 3: 上游 U5 callback 对接 + X1 acceptance run；Sprint 2 P2 穿插
+Week 1（已落地，2026-05-21~22）:
+  W2-3 ✅ → W2-4 ✅ → W-DoD smoke + usage-guide ✅
+  → T1 + T2 ✅（Phase 6 测试缺口 80% 闭环）
+  → SDK 0.1.0 ✅（设计稿 §13.1 步骤 1-8 全量交付）
+
+Week 2（推进重点 — 反馈环驱动）:
+  上游 U5 callback 对接 + SDK-D1 上游接入演练（驱动反馈环）
+  → 必要时启动 SDK-D3 L2 stub server 协议测试（~1d）
+  → Sprint 2 P2 优先三项（P2-22/23/25）穿插
+
+Week 3（决策与外部）:
+  Phase 7 启动评估（§9.D）+ X1 acceptance run（依赖 U1 meta-skill）
+  → 若 broker 出现真实需求，启动 T3 安全回归脚本化 + Phase 7 broker 三件套
 ```
+
+> **当前 worker 仓库内没有阻塞当前 release 的工作**；下一次推进重心已外移到 SDK-D1 接入演练 + 上游 U5 / X1 acceptance + 跨团队 MCP 协议对齐。
